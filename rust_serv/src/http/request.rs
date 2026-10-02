@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 // Struct request represents an HTTP request.
+#[derive(Debug, PartialEq)]
 pub struct Request {
     pub method: Method,
     pub target: String,
@@ -10,7 +11,7 @@ pub struct Request {
 }
 
 // Enum method represents the HTTP method of a request.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     Get,
     Post,
@@ -38,7 +39,7 @@ impl FromStr for Method {
 }
 
 // Enum version represents the HTTP version of a request.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Version {
     Http10,
     Http11
@@ -58,6 +59,7 @@ impl FromStr for Version {
 }
 
 // Struct headers represents the HTTP headers of a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Headers(Vec<(String, String)>);
 
 // Implementation of methods for the Headers struct.

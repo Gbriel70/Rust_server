@@ -46,165 +46,230 @@ pub fn parse_request(buf: &[u8],) -> Result<Option<(Request, usize)>, ParseError
     // Calculate the length of the head, which is the position of the end of the head plus 4 bytes for the "\r\n\r\n" sequence.
     let head_len = head_end + 4;
 
-    // Convert the head portion of the buffer to a UTF-8 string. If the conversion fails, return a MalformedRequestLine error.
-    let head = match std::str::from_utf8(&buf[..head_end]) {
-        Ok(head) => head,
-        Err(_) => return Err(ParseError::MalformedRequestLine),
-    };
+    // If the length of the head exceeds the maximum allowed size, return a HeadersTooLarge error.
+    if head_len > MAX_HEAD {
+        return Err(ParseError::HeadersTooLarge);
+    }
+
+    // Convert the head portion of the buffer to a UTF-8 string. If the conversion fails, return a MalformedHeader error.
+    let head = std::str::from_utf8(&buf[..head_end]).map_err(|_| ParseError::MalformedHeader)?;
 
     // Split the head into lines using "\r\n" as the delimiter.
     let mut lines = head.split("\r\n");
 
-    // Retrieve the request line (the first line of the HTTP request) from the lines iterator. If there is no request line, 
-    // return a MalformedRequestLine error.
-    let request_line = match lines.next() {
-        Some(line) => line,
-        None => return Err(ParseError::MalformedRequestLine),
-    };
+    // Parse the request line, which is the first line of the HTTP request and contains the method, target, and version.
+    let request_line = lines.next().ok_or(ParseError::MalformedRequestLine)?;
 
-    // 2. Parse the request line, which should consist of the HTTP method, target, and version separated by spaces.
-    let mut parts = request_line.split(' ');
-    
-    // Extract the method, target, and version from the request line.
-    let method_str = parts.next();
-    // Extract the target and version from the request line.
-    let target = parts.next();
-    // Extract the version from the request line.
-    let version_str = parts.next();
+    // Parse the request line into its components: method, target, and version.
+    let (method, target, version) = parse_request_line(request_line)?;
 
-    
-    // Check if any of the method, target, or version are missing, or if there are extra parts in the request line. 
-    // If so, return a MalformedRequestLine error.
-    if method_str.is_none() || target.is_none() || version_str.is_none() || parts.next().is_some(){
-        return Err(ParseError::MalformedRequestLine);
-    }
+    //parse the headers from the remaining lines of the HTTP request.
+    let headers = parse_headers(lines)?;
 
-    // Unwrap the method, target, and version strings since we have already checked that they are not None.
-    let method_str = method_str.unwrap();
-    let target = target.unwrap();
-    let version_str = version_str.unwrap();
+    // Validate the presence and correctness of the Host header based on the HTTP version.
+    validate_host(&version, &headers)?;
 
-    // Validate the target to ensure it is not empty and starts with a '/'. If not, return a MalformedRequestLine error.
-    if target.is_empty() || !target.starts_with('/') {
-        return Err(ParseError::MalformedRequestLine);
-    }
+    // Parse the Content-Length header to determine the length of the request body.
+    let content_length = parse_content_length(&headers)?;
 
-    // Validate the method to ensure it is a valid HTTP method. If not, return an UnsupportedMethod error.
-    let method = match Method::from_str(method_str) {
-        Ok(method) => method,
-        Err(_) => return Err(ParseError::UnsupportedMethod),
-    };
-
-    // Validate the version to ensure it is a valid HTTP version. If not, return an UnsupportedVersion error.
-    let version = match Version::from_str(version_str) {
-        Ok(version) => version,
-        Err(_) => return Err(ParseError::UnsupportedVersion),
-    };
-
-    // 3. Parse the headers, which are the remaining lines after the request line.
-
-    // Create a new Headers struct to store the parsed headers.
-    let mut headers = Headers::new();
-
-    // Iterate over the remaining lines to parse each header.
-    for line in lines {
-        // if line starts with space or tab, it's a continuation of the previous header, which is not supported in this implementation.
-        if line.starts_with(' ') || line.starts_with('\t') {
-            return Err(ParseError::MalformedHeader);
-        }
-
-        // Split the first occurrence of ':' to separate the header name and value. If there is no ':', return a MalformedHeader error.
-        let (name, value) = match line.split_once(':') {
-            Some(pair) => pair,
-            None => return Err(ParseError::MalformedHeader),
-        };
-
-        // Validate the header name to ensure it is not empty and does not end with a space or tab. If it is invalid, return a MalformedHeader error.
-        if name.is_empty() {
-            return Err(ParseError::MalformedHeader);
-        }
-
-        // Validate the header name to ensure it does not end with a space or tab. If it does, return a MalformedHeader error.
-        if name.ends_with(' ') || name.ends_with('\t') {
-            return Err(ParseError::MalformedHeader);
-        }
-
-        // Trim leading and trailing whitespace from the header value.
-        let value = value.trim_matches([' ', '\t']);
-
-        // Add the parsed header name and value to the Headers struct.
-        headers.push(name.to_string(), value.to_string());
-    }
-
-    // 4 Host
-
-    // If the HTTP version is 1.1, the Host header is required. If it is missing, return a MissingHost error.
-    if matches!(version, Version::Http11) && headers.get("Host").is_none(){
-        return Err(ParseError::MissingHost);
-    }
-
-    // 5. Transfer-Encoding
+    // Check if the Transfer-Encoding header is present, which is not supported in this implementation.
     if headers.get("Transfer-Encoding").is_some() {
         return Err(ParseError::UnsupportedTransferEncoding);
     }
 
-    // 6. Content-Length
-    let mut content_length = 0usize;
-
-    /*
-     * Check if the Content-Length header is present. If it is, validate its value and ensure there is only one Content-Length header. 
-     * If the value is invalid or there are multiple headers, return an InvalidContentLength error. If the content length exceeds the 
-     * maximum allowed body size, return a BodyTooLarge error.
-     */
-    if let Some(value) = headers.get("Content-Length") {
-
-        // Count the number of Content-Length headers present in the headers. If there is more than one, return an InvalidContentLength error.
-        let count = headers
-            .iter()
-            .filter(|(name, _)| { name.eq_ignore_ascii_case("Content-Length") })
-            .count();
-
-        // If there is not exactly one Content-Length header, return an InvalidContentLength error.
-        if count != 1 {
-            return Err(ParseError::InvalidContentLength);
-        }
-
-        // Parse the value of the Content-Length header to determine the length of the body. 
-        // If the value is invalid, return an InvalidContentLength error.
-        content_length = match value.parse::<usize>() {
-            Ok(value) => value,
-            Err(_) => return Err(ParseError::InvalidContentLength),
-        };
-
-        // If the content length exceeds the maximum allowed body size, return a BodyTooLarge error.
-        if content_length > MAX_BODY {
-            return Err(ParseError::BodyTooLarge);
-        }
+    // Check if the content length exceeds the maximum allowed body size. If it does, return a BodyTooLarge error.
+    if content_length > MAX_BODY {
+        return Err(ParseError::BodyTooLarge);
     }
 
-    // 7 check if the buffer contains enough bytes to include the entire body based on the Content-Length header.
-    let consumed = match head_len.checked_add(content_length) {
-        Some(value) => value,
-        None => return Err(ParseError::BodyTooLarge),
-    };
+    // Calculate the total number of bytes that need to be consumed from the buffer, which is the sum of the 
+    //  head length and the content length.
+    let consumed = head_len.checked_add(content_length).ok_or(ParseError::BodyTooLarge)?;
 
-    // If the buffer does not contain enough bytes to include the entire body, return Ok(None) to indicate that the request is incomplete.
+    // If the buffer length is less than the total consumed bytes, return Ok(None) to indicate that the request is incomplete.
     if buf.len() < consumed {
         return Ok(None);
     }
-
-    // 8 Create a new Request struct with the parsed method, target, version, headers, and body.
-    // The body is extracted from the buffer based on the calculated consumed length.
+    
+    // Extract the body of the HTTP request from the buffer, which is the portion of the buffer after the head and up to the consumed length.
     let body = buf[head_len..consumed].to_vec();
 
     // Create a new Request struct with the parsed method, target, version, headers, and body.
     let request = Request {
         method,
-        target: target.to_string(),
+        target,
         version,
         headers,
         body,
     };
 
     Ok(Some((request, consumed)))
+}
+
+// Function to parse the request line of an HTTP request, which consists of the method, target, and version.
+fn parse_request_line(line: &str,) -> Result<(Method, String, Version), ParseError> {
+
+    // Split the request line into its components using space as the delimiter.
+    let mut parts = line.split(' ');
+
+    // Use pattern matching to extract the method, target, and version from the split parts. 
+    // If any of these components are missing, return a MalformedRequestLine error.
+    let (Some(method_str), Some(target), Some(version_str), None) = 
+    (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(ParseError::MalformedRequestLine);
+    };
+    
+    // Validate that the target is not empty and starts with a forward slash ('/'). 
+    // If it does not meet these criteria, return a MalformedRequestLine error.
+    if target.is_empty() || !target.starts_with('/') {
+        return Err(ParseError::MalformedRequestLine);
+    }
+
+    // Convert the method string to a Method enum value. If the conversion fails,
+    //  return an UnsupportedMethod error.
+    let method = Method::from_str(method_str).map_err(|_| ParseError::UnsupportedMethod)?;
+
+    // Convert the version string to a Version enum value. If the conversion fails,
+    //  return an UnsupportedVersion error.
+    let version = Version::from_str(version_str).map_err(|_| ParseError::UnsupportedVersion)?;
+
+    // Return the parsed method, target, and version as a tuple.
+    Ok((method, target.to_string(), version))
+}
+
+// Function to parse the headers of an HTTP request from an iterator of lines.
+fn parse_headers<'a, I>(lines: I) -> Result<Headers, ParseError> where I: Iterator<Item = &'a str>, {
+    let mut headers = Headers::new();
+
+    // Iterate over each line in the provided iterator of lines.
+    for line in lines {
+        // Obsolete line folding is not supported.
+        if line.starts_with(' ') || line.starts_with('\t') {
+            return Err(ParseError::MalformedHeader);
+        }
+
+        // Split the line into a name and value pair using the first occurrence of ':' as the delimiter.
+        let (name, value) = line.split_once(':').ok_or(ParseError::MalformedHeader)?;
+
+        // Validate the header name and value using the respective validation functions.
+        validate_header_name(name)?;
+        validate_header_value(value)?;
+
+        // Trim leading and trailing whitespace from the header value.
+        let value = value.trim_matches([' ', '\t']);
+
+        // Add the validated header name and value to the headers collection.
+        headers.push(name.to_string(), value.to_string());
+    }
+    Ok(headers)
+}
+
+// Function to validate the header name of an HTTP request.
+fn validate_header_name(name: &str) -> Result<(), ParseError> {
+    // Header names must not be empty and must consist of valid token characters.
+    if name.is_empty() {
+        return Err(ParseError::MalformedHeader);
+    }
+
+    // Check if all characters in the header name are valid token characters. 
+    // If any character is invalid, return a MalformedHeader error.
+    if !name.bytes().all(is_token_char) {
+        return Err(ParseError::MalformedHeader);
+    }
+
+    Ok(())
+}
+
+// Function to check if a byte is a valid token character according to the HTTP specification.
+fn is_token_char(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'a'..=b'z'
+            | b'A'..=b'Z'
+            | b'0'..=b'9'
+            | b'!'
+            | b'#'
+            | b'$'
+            | b'%'
+            | b'&'
+            | b'\''
+            | b'*'
+            | b'+'
+            | b'-'
+            | b'.'
+            | b'^'
+            | b'_'
+            | b'`'
+            | b'|'
+            | b'~'
+    )
+}
+
+// Function to validate the header value of an HTTP request.
+fn validate_header_value(value: &str) -> Result<(), ParseError> {
+    for byte in value.bytes() {
+        // HTAB (0x09) is allowed.
+        // Other control characters are rejected.
+        if byte < 0x20 && byte != b'\t' {
+            return Err(ParseError::MalformedHeader);
+        }
+
+        // DEL (0x7f) is also a control character.
+        if byte == 0x7f {
+            return Err(ParseError::MalformedHeader);
+        }
+    }
+
+    Ok(())
+}
+
+// Function to validate the presence and correctness of the Host header based on the HTTP version.
+fn validate_host(version: &Version, headers: &Headers) -> Result<(), ParseError> {
+    // Count the number of Host headers in the provided headers collection, ignoring case.
+    let host_count = headers.iter().filter(|(name, _)| name.eq_ignore_ascii_case("Host")).count();
+
+    // For HTTP/1.1 requests, the Host header is required and must appear exactly once.
+    if *version == Version::Http11 {
+        if host_count == 0 {
+            return Err(ParseError::MissingHost);
+        }
+
+        if host_count > 1 {
+            return Err(ParseError::MalformedHeader);
+        }
+    }
+    Ok(())
+}
+
+// Function to parse the Content-Length header from the provided headers collection.
+fn parse_content_length(headers: &Headers) -> Result<usize, ParseError> {
+
+    // Collect all values of the Content-Length header, ignoring case, into a vector.
+    let values: Vec<&str> = headers.iter()
+                            .filter(|(key, _)| key.eq_ignore_ascii_case("Content-Length"))
+                            .map(|(_, value)| value.as_str())
+                            .collect();
+
+    // If no Content-Length header is present, return 0 as the default value.
+    if values.is_empty() {
+        return Ok(0);
+    }
+
+    // If there is more than one Content-Length header, return an InvalidContentLength error.
+    if values.len() != 1 {
+        return Err(ParseError::InvalidContentLength);
+    }
+
+    // Extract the single value of the Content-Length header.
+    let value = values[0];
+
+    // HTTP Content-Length must contain one or more decimal digits.
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(ParseError::InvalidContentLength);
+    }
+    // Parse the Content-Length value as a usize. If parsing fails, return an InvalidContentLength error.
+    value
+        .parse::<usize>()
+        .map_err(|_| ParseError::InvalidContentLength)
 }
