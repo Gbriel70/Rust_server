@@ -22,7 +22,7 @@ pub enum ParseError {
 
 // Function to parse an HTTP request from a byte buffer and return a Result containing either an
 // Option with the parsed Request and the number of bytes consumed, or a ParseError.
-pub fn parse_request(buf: &[u8],) -> Result<Option<(Request, usize)>, ParseError> {
+pub fn parse_request(buf: &[u8]) -> Result<Option<(Request, usize)>, ParseError> {
     /*
      * 1. search for the end of the head, which is indicated by the sequence:
      *
@@ -34,8 +34,9 @@ pub fn parse_request(buf: &[u8],) -> Result<Option<(Request, usize)>, ParseError
      */
 
     // Search for the end of the HTTP request head by looking for the sequence "\r\n\r\n" in the buffer.
-    let head_end = match buf.windows(4).position(|window| {window == b"\r\n\r\n" }) {
-        Some(pos) => pos,None => {
+    let head_end = match buf.windows(4).position(|window| window == b"\r\n\r\n") {
+        Some(pos) => pos,
+        None => {
             if buf.len() > MAX_HEAD {
                 return Err(ParseError::HeadersTooLarge);
             }
@@ -83,8 +84,10 @@ pub fn parse_request(buf: &[u8],) -> Result<Option<(Request, usize)>, ParseError
     }
 
     // Calculate the total number of bytes that need to be consumed from the buffer, which is the sum of the 
-    //  head length and the content length.
-    let consumed = head_len.checked_add(content_length).ok_or(ParseError::BodyTooLarge)?;
+    // head length and the content length.
+    let consumed = head_len
+        .checked_add(content_length)
+        .ok_or(ParseError::BodyTooLarge)?;
 
     // If the buffer length is less than the total consumed bytes, return Ok(None) to indicate that the request is incomplete.
     if buf.len() < consumed {
