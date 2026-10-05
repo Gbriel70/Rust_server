@@ -1,116 +1,108 @@
-// Import necessary modules for I/O operations and networking
-use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+//! Server TCP loop and request-to-response adaptation.
 
-// Import the parse_request function from the http::parser module
-use crate::http::parser::parse_request;
+use std::io::{self, Read};
+use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 
-// Define constants for the server address and buffer size
-const ADDR: &str = "127.0.0.1:8080";
-const BUFFER_SIZE: usize = 4096;
+use crate::error::Error;
+use crate::http::parser::{ParseError, parse_request};
+use crate::http::request::Request;
+use crate::http::response::{Response, Status};
 
-// Function to run the server, which listens for incoming TCP connections and handles them
-pub fn run() -> io::Result<()> {
-    // Create a TCP listener bound to the specified address
-    let listener = TcpListener::bind(ADDR)?;
+const BUFFER_SIZE: usize = 1024;
 
-    println!("Listening on {}", listener.local_addr()?);
+/// TCP server responsible for receiving HTTP requests and sending responses.
+pub struct Server {
+    listener: TcpListener,
+}
 
-    // Loop to accept incoming connections and handle them
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                if let Err(e) = handle_connection(stream) {
-                    eprintln!("Connection error: {}", e);
-                }
-            }
-            Err(e) => {
-                eprintln!("accept error: {}", e);
-            }
-        }
+impl Server {
+    /// Opens a TCP listener at the provided address.
+    pub fn bind(addr: impl ToSocketAddrs) -> io::Result<Self> {
+        Ok(Self {
+            listener: TcpListener::bind(addr)?,
+        })
     }
 
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.listener.local_addr()
+    }
+
+    /// Continuously accepts connections and handles them sequentially.
+    pub fn run(&self) -> io::Result<()> {
+        for stream in self.listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    if let Err(error) = handle_connection(stream) {
+                        eprintln!("Connection error: {error}");
+                    }
+                }
+                Err(error) => eprintln!("accept error: {error}"),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn read_request(
+    stream: &mut TcpStream,
+    buf: &mut Vec<u8>,
+) -> Result<Option<(Request, usize)>, Error> {
+    // The parser may need multiple reads before the complete request is available.
+    loop {
+        if let Some(request) = parse_request(buf)? {
+            return Ok(Some(request));
+        }
+        let mut chunk = [0; BUFFER_SIZE];
+        let n = match stream.read(&mut chunk) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if n == 0 {
+            return if buf.is_empty() {
+                Ok(None)
+            } else {
+                Err(Error::UnexpectedEof)
+            };
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+}
+
+fn handle_connection(mut stream: TcpStream) -> Result<(), Error> {
+    let mut buf = Vec::with_capacity(BUFFER_SIZE);
+    // Each connection produces at most one response and is then closed.
+    let response = match read_request(&mut stream, &mut buf) {
+        Ok(Some((request, _))) => handle(&request),
+        Ok(None) => return Ok(()),
+        Err(Error::Parse(error)) => Response::new(status_for(&error))
+            .header("Content-Type", "text/plain")
+            .body(error.to_string()),
+        Err(error) => return Err(error),
+    };
+    response
+        .header("Connection", "close")
+        .write_to(&mut stream)?;
     Ok(())
 }
 
-// Function to handle individual connections
-fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
-    // Create a buffer to store incoming data from the stream
-    let mut buffer = Vec::with_capacity(BUFFER_SIZE);
+fn handle(_request: &Request) -> Response {
+    Response::new(Status::Ok)
+        .header("Content-Type", "text/plain")
+        .body("hello")
+}
 
-    // Loop to read data from the stream and parse HTTP requests
-    loop {
-        // Create a temporary buffer to read data into
-        let mut temp = [0u8; BUFFER_SIZE];
-
-        // Read data from the stream into the temporary buffer
-        let n = stream.read(&mut temp)?;
-
-        // If no data was read, break the loop (connection closed)
-        if n == 0 {
-            break;
+/// Maps parsing errors to appropriate HTTP statuses for the client.
+pub fn status_for(error: &ParseError) -> Status {
+    match error {
+        ParseError::MalformedRequestLine
+        | ParseError::MalformedHeader
+        | ParseError::MissingHost
+        | ParseError::InvalidContentLength => Status::BadRequest,
+        ParseError::BodyTooLarge => Status::PayloadTooLarge,
+        ParseError::HeadersTooLarge => Status::RequestHeaderFieldsTooLarge,
+        ParseError::UnsupportedMethod | ParseError::UnsupportedTransferEncoding => {
+            Status::NotImplemented
         }
-
-        // Extend the main buffer with the newly read data
-        buffer.extend_from_slice(&temp[..n]);
-
-        match parse_request(&buffer) {
-            Ok(None) => {
-                // Request incomplete, continue reading more data
-                continue;
-            }
-
-            // Request successfully parsed, handle the request and send a response
-            Ok(Some((request, consumed))) => {
-                println!("Request consumed: {} bytes", consumed);
-
-                println!("Method: {:?}", request.method);
-                println!("Target: {}", request.target);
-                println!("Version: {:?}", request.version);
-
-                // Print the headers of the request
-                for (name, value) in request.headers.iter() {
-                    println!("Header: {} = {}", name, value);
-                }
-
-                println!("Body: {:?}", request.body);
-
-                // Create the response body
-                let body = "hello\n";
-    
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\n\
-                     Content-Type: text/plain\r\n\
-                     Content-Length: {}\r\n\
-                     Connection: close\r\n\
-                     \r\n\
-                     {}",
-                    body.len(),
-                    body
-                );
-
-                stream.write_all(response.as_bytes())?;
-
-                break;
-            }
-
-            // Error occurred while parsing the HTTP request
-            Err(e) => {
-                eprintln!("HTTP parse error: {:?}", e);
-
-                // Create the error response
-                let response =
-                    "HTTP/1.1 400 Bad Request\r\n\
-                     Content-Length: 0\r\n\
-                     Connection: close\r\n\
-                     \r\n";
-
-                stream.write_all(response.as_bytes())?;
-
-                break;
-            }
-        }
+        ParseError::UnsupportedVersion => Status::HttpVersionNotSupported,
     }
-
-    Ok(())
 }

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use rust_serv::http::parser::{parse_request, ParseError, MAX_BODY, MAX_HEAD};
+    use rust_serv::http::parser::{MAX_BODY, MAX_HEAD, ParseError, parse_request};
     use rust_serv::http::request::{Method, Request, Version};
 
     const GET: &str = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
@@ -96,9 +96,7 @@ mod tests {
         assert_eq!(consumed, GET.len());
         assert_eq!(first.target, "/");
 
-        let (next, consumed_next) = parse_request(&raw.as_bytes()[consumed..])
-            .unwrap()
-            .unwrap();
+        let (next, consumed_next) = parse_request(&raw.as_bytes()[consumed..]).unwrap().unwrap();
         assert_eq!(next.target, "/b");
         assert_eq!(consumed_next, second.len());
     }
@@ -172,15 +170,39 @@ mod tests {
     fn request_line_errors() {
         let cases = [
             ("GET /\r\nHost: x\r\n\r\n", ParseError::MalformedRequestLine),
-            ("GET  / HTTP/1.1\r\nHost: x\r\n\r\n", ParseError::MalformedRequestLine),
-            ("GET / HTTP/1.1 \r\nHost: x\r\n\r\n", ParseError::MalformedRequestLine),
+            (
+                "GET  / HTTP/1.1\r\nHost: x\r\n\r\n",
+                ParseError::MalformedRequestLine,
+            ),
+            (
+                "GET / HTTP/1.1 \r\nHost: x\r\n\r\n",
+                ParseError::MalformedRequestLine,
+            ),
             ("\r\n\r\n", ParseError::MalformedRequestLine),
-            ("GET x HTTP/1.1\r\nHost: x\r\n\r\n", ParseError::MalformedRequestLine),
-            ("GET * HTTP/1.1\r\nHost: x\r\n\r\n", ParseError::MalformedRequestLine),
-            ("BREW / HTTP/1.1\r\nHost: x\r\n\r\n", ParseError::UnsupportedMethod),
-            ("get / HTTP/1.1\r\nHost: x\r\n\r\n", ParseError::UnsupportedMethod),
-            ("GET / HTTP/2.0\r\nHost: x\r\n\r\n", ParseError::UnsupportedVersion),
-            ("GET / HTTP/1.1x\r\nHost: x\r\n\r\n", ParseError::UnsupportedVersion),
+            (
+                "GET x HTTP/1.1\r\nHost: x\r\n\r\n",
+                ParseError::MalformedRequestLine,
+            ),
+            (
+                "GET * HTTP/1.1\r\nHost: x\r\n\r\n",
+                ParseError::MalformedRequestLine,
+            ),
+            (
+                "BREW / HTTP/1.1\r\nHost: x\r\n\r\n",
+                ParseError::UnsupportedMethod,
+            ),
+            (
+                "get / HTTP/1.1\r\nHost: x\r\n\r\n",
+                ParseError::UnsupportedMethod,
+            ),
+            (
+                "GET / HTTP/2.0\r\nHost: x\r\n\r\n",
+                ParseError::UnsupportedVersion,
+            ),
+            (
+                "GET / HTTP/1.1x\r\nHost: x\r\n\r\n",
+                ParseError::UnsupportedVersion,
+            ),
         ];
 
         for (raw, expected) in cases {
@@ -221,7 +243,11 @@ mod tests {
         ];
 
         for raw in cases {
-            assert_eq!(parse_err(raw), ParseError::MalformedHeader, "input: {raw:?}");
+            assert_eq!(
+                parse_err(raw),
+                ParseError::MalformedHeader,
+                "input: {raw:?}"
+            );
         }
     }
 
@@ -234,10 +260,7 @@ mod tests {
 
     #[test]
     fn host_rules() {
-        assert_eq!(
-            parse_err("GET / HTTP/1.1\r\n\r\n"),
-            ParseError::MissingHost
-        );
+        assert_eq!(parse_err("GET / HTTP/1.1\r\n\r\n"), ParseError::MissingHost);
         assert_eq!(
             parse_err("GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n"),
             ParseError::MalformedHeader
@@ -259,7 +282,8 @@ mod tests {
 
     #[test]
     fn duplicate_content_length_is_rejected() {
-        let raw = "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello";
+        let raw =
+            "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello";
 
         assert_eq!(parse_err(raw), ParseError::InvalidContentLength);
     }

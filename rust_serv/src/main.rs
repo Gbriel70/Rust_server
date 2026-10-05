@@ -1,8 +1,8 @@
-// Import the server module from the rust_serv crate
-use rust_serv::server;
+use rust_serv::server::Server;
 
-// The main function serves as the entry point of the application
+/// Starts the TCP server and keeps it accepting connections on port 8080.
 fn main() -> std::io::Result<()> {
-    server::run()?;
-    Ok(())
+    let server = Server::bind("127.0.0.1:8080")?;
+    println!("Listening on {}", server.local_addr()?);
+    server.run()
 }

@@ -1,24 +1,57 @@
+//! Incremental parser for HTTP requests received as bytes.
+
 use std::str::FromStr;
 
-use crate::http::request::{Headers, Method, Request, Version};
+use crate::http::headers::Headers;
+use crate::http::request::{Method, Request, Version};
 
 /// Maximum size of the request head (request line + headers + final CRLF CRLF).
 pub const MAX_HEAD: usize = 8 * 1024;
 /// Maximum accepted body size (Content-Length).
 pub const MAX_BODY: usize = 1024 * 1024;
 
+/// Reasons why a request cannot be accepted.
 #[derive(Debug, PartialEq)]
 pub enum ParseError {
+    /// The request line does not contain exactly a method, target, and version.
     MalformedRequestLine,
+    /// The provided method is not supported.
     UnsupportedMethod,
+    /// The provided HTTP version is not supported.
     UnsupportedVersion,
+    /// A header does not follow the required syntax or contains invalid characters.
     MalformedHeader,
+    /// The header block exceeds `MAX_HEAD` bytes.
     HeadersTooLarge,
+    /// An HTTP/1.1 request does not contain exactly one `Host` header.
     MissingHost,
+    /// `Content-Length` is repeated or has an invalid format.
     InvalidContentLength,
+    /// The declared body exceeds `MAX_BODY` bytes.
     BodyTooLarge,
+    /// The server does not implement `Transfer-Encoding`.
     UnsupportedTransferEncoding,
 }
+
+/// Converts a parsing error into a message suitable for logs and responses.
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::MalformedRequestLine => "malformed request line",
+            Self::UnsupportedMethod => "unsupported method",
+            Self::UnsupportedVersion => "unsupported HTTP version",
+            Self::MalformedHeader => "malformed header",
+            Self::HeadersTooLarge => "request headers too large",
+            Self::MissingHost => "missing Host header",
+            Self::InvalidContentLength => "invalid Content-Length",
+            Self::BodyTooLarge => "request body too large",
+            Self::UnsupportedTransferEncoding => "unsupported Transfer-Encoding",
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for ParseError {}
 
 /// Parses one HTTP request from the start of `buf`.
 ///
@@ -232,7 +265,5 @@ fn parse_content_length(headers: &Headers) -> Result<usize, ParseError> {
 
     // At this point the value is only digits, so the only possible failure is overflow:
     // the number is too large to be a valid body size.
-    value
-        .parse::<usize>()
-        .map_err(|_| ParseError::BodyTooLarge)
+    value.parse::<usize>().map_err(|_| ParseError::BodyTooLarge)
 }

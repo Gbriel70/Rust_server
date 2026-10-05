@@ -1,16 +1,25 @@
+//! Types representing the request line and a complete HTTP request.
+
+pub use super::headers::Headers;
+
 use std::str::FromStr;
 
-// Struct request represents an HTTP request.
+/// Represents an HTTP request that has already been validated by the parser.
 #[derive(Debug, PartialEq)]
 pub struct Request {
+    /// HTTP method used by the request.
     pub method: Method,
+    /// Requested resource path, including an optional query string.
     pub target: String,
+    /// Protocol version declared in the request line.
     pub version: Version,
+    /// Received headers, preserving their order and repetitions.
     pub headers: Headers,
+    /// Request body, without the headers or the HTTP terminator.
     pub body: Vec<u8>,
 }
 
-// Enum method represents the HTTP method of a request.
+/// HTTP methods accepted by the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     Get,
@@ -21,10 +30,10 @@ pub enum Method {
     Options,
 }
 
-// Implementation of the FromStr trait for the Method enum, allowing conversion from a string to a Method variant.
 impl FromStr for Method {
     type Err = ();
 
+    /// Converts a textual method name to its internal representation.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "GET" => Ok(Method::Get),
@@ -38,52 +47,22 @@ impl FromStr for Method {
     }
 }
 
-// Enum version represents the HTTP version of a request.
+/// HTTP versions supported by the parser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Version {
     Http10,
-    Http11
+    Http11,
 }
 
-// Implementation of the FromStr trait for the Version enum, allowing conversion from a string to a Version variant.
 impl FromStr for Version {
     type Err = ();
 
+    /// Converts a textual version, such as `HTTP/1.1`, to `Version`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "HTTP/1.0" => Ok(Version::Http10),
             "HTTP/1.1" => Ok(Version::Http11),
             _ => Err(()),
         }
-    }
-}
-
-// Struct headers represents the HTTP headers of a request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Headers(Vec<(String, String)>);
-
-// Implementation of methods for the Headers struct.
-impl Headers {
-
-    // Method to create a new instance of Headers.
-    pub fn new() -> Self {
-        Self(Vec::new())
-    }
-
-    // Method to retrieve the value of a header by name, case-insensitive.
-    pub fn get (&self, name: &str) -> Option<&str> {
-        self.0.iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.as_str())
-    }
-
-    // Method to add a new header to the collection.
-    pub fn push(&mut self, name: String, value: String) {
-        self.0.push((name, value));
-    }
-
-    // Method to return an iterator over the headers.
-    pub fn iter(&self) -> impl Iterator<Item = &(String, String)> {
-        self.0.iter()
     }
 }
