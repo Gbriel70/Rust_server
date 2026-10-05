@@ -3,3 +3,6 @@ cargo-crash.log
 .idea/
 .vscode/
 *rs.bk
+.claude
+.serena
+validation
