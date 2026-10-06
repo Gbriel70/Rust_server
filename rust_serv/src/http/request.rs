@@ -20,6 +20,13 @@ pub struct Request {
 }
 
 impl Request {
+    /// HTTP/1.1 persists by default. An explicit close always wins.
+    pub fn keep_alive(&self) -> bool {
+        !self.headers.has_token("Connection", "close")
+            && (self.version == Version::Http11
+                || self.headers.has_token("Connection", "keep-alive"))
+    }
+
     /// Borrows the path without decoding it or normalizing its segments.
     pub fn path(&self) -> &str {
         self.target

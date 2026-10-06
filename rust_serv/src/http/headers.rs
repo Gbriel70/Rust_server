@@ -21,6 +21,17 @@ impl Headers {
             .map(|(_, value)| value.as_str())
     }
 
+    /// Searches comma-separated tokens across every matching header line.
+    pub fn has_token(&self, name: &str, token: &str) -> bool {
+        !token.is_empty()
+            && self
+                .0
+                .iter()
+                .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+                .flat_map(|(_, value)| value.split(','))
+                .any(|value| value.trim_matches([' ', '\t']).eq_ignore_ascii_case(token))
+    }
+
     /// Appends a header to the collection while preserving its order.
     pub fn push(&mut self, name: String, value: String) {
         self.0.push((name, value));

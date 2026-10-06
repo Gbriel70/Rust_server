@@ -13,6 +13,10 @@ pub enum Error {
     Parse(ParseError),
     /// The connection ended before an incomplete request was finished.
     UnexpectedEof,
+    /// No request bytes arrived before the idle timeout.
+    IdleTimeout,
+    /// An incomplete request exceeded its total time budget.
+    RequestTimeout,
 }
 
 /// Defines messages displayed when logging or returning an error.
@@ -22,6 +26,8 @@ impl fmt::Display for Error {
             Self::Io(error) => write!(f, "I/O error: {error}"),
             Self::Parse(error) => write!(f, "HTTP parse error: {error}"),
             Self::UnexpectedEof => f.write_str("connection closed during request"),
+            Self::IdleTimeout => f.write_str("connection idle timeout"),
+            Self::RequestTimeout => f.write_str("request timeout"),
         }
     }
 }
@@ -32,7 +38,7 @@ impl std::error::Error for Error {
         match self {
             Self::Io(error) => Some(error),
             Self::Parse(error) => Some(error),
-            Self::UnexpectedEof => None,
+            Self::UnexpectedEof | Self::IdleTimeout | Self::RequestTimeout => None,
         }
     }
 }

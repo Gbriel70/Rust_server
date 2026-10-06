@@ -14,6 +14,10 @@ mod tests {
         assert_eq!(error.to_string(), "HTTP parse error: missing Host header");
         assert_eq!(error.source().unwrap().to_string(), "missing Host header");
         assert!(Error::UnexpectedEof.source().is_none());
+        assert!(Error::IdleTimeout.source().is_none());
+        assert!(Error::RequestTimeout.source().is_none());
+        assert_eq!(Error::IdleTimeout.to_string(), "connection idle timeout");
+        assert_eq!(Error::RequestTimeout.to_string(), "request timeout");
         assert_eq!(
             Error::UnexpectedEof.to_string(),
             "connection closed during request"

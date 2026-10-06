@@ -94,6 +94,7 @@ mod tests {
             (Status::BadRequest, 400, "Bad Request"),
             (Status::NotFound, 404, "Not Found"),
             (Status::MethodNotAllowed, 405, "Method Not Allowed"),
+            (Status::RequestTimeout, 408, "Request Timeout"),
             (Status::PayloadTooLarge, 413, "Payload Too Large"),
             (
                 Status::RequestHeaderFieldsTooLarge,
