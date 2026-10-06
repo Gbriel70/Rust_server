@@ -49,3 +49,17 @@ fn hex_digit(byte: u8) -> Option<u8> {
         _ => None,
     }
 }
+
+/// Decode each segment exactly once; separators and NUL cannot enter a segment.
+pub fn decode_path(path: &str) -> Result<String, UriError> {
+    path.split('/')
+        .map(|segment| {
+            let decoded = percent_decode(segment)?;
+            if decoded.contains(['/', '\\', '\0']) {
+                return Err(UriError::InvalidEscape);
+            }
+            Ok(decoded)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|segments| segments.join("/"))
+}

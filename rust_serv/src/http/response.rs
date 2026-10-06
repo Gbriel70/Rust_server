@@ -9,6 +9,11 @@ use super::headers::Headers;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Ok,
+    NoContent,
+    Forbidden,
+    MovedPermanently,
+    NotModified,
+    InternalServerError,
     BadRequest,
     NotFound,
     MethodNotAllowed,
@@ -24,6 +29,11 @@ impl Status {
     pub fn code(self) -> u16 {
         match self {
             Self::Ok => 200,
+            Self::NoContent => 204,
+            Self::Forbidden => 403,
+            Self::MovedPermanently => 301,
+            Self::NotModified => 304,
+            Self::InternalServerError => 500,
             Self::BadRequest => 400,
             Self::NotFound => 404,
             Self::MethodNotAllowed => 405,
@@ -38,6 +48,11 @@ impl Status {
     pub fn reason(self) -> &'static str {
         match self {
             Self::Ok => "OK",
+            Self::NoContent => "No Content",
+            Self::Forbidden => "Forbidden",
+            Self::MovedPermanently => "Moved Permanently",
+            Self::NotModified => "Not Modified",
+            Self::InternalServerError => "Internal Server Error",
             Self::BadRequest => "Bad Request",
             Self::NotFound => "Not Found",
             Self::MethodNotAllowed => "Method Not Allowed",
@@ -129,8 +144,12 @@ impl Response {
                 write!(bytes, "{name}: {value}\r\n")?;
             }
         }
-        write!(bytes, "Content-Length: {}\r\n\r\n", self.body.len())?;
-        if include_body {
+        let no_body = matches!(self.status, Status::NoContent | Status::NotModified);
+        if !no_body {
+            write!(bytes, "Content-Length: {}\r\n", self.body.len())?;
+        }
+        write!(bytes, "\r\n")?;
+        if include_body && !no_body {
             bytes.extend_from_slice(&self.body);
         }
         w.write_all(&bytes)

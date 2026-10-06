@@ -6,9 +6,17 @@ use crate::http::uri::percent_decode;
 use crate::router::Router;
 
 pub fn default_router() -> Router {
+    application_router().route(Method::Get, "/", index)
+}
+
+/// Static mode serves the root index; exact application routes shadow files.
+pub fn static_router(files: crate::static_files::StaticFiles) -> Router {
+    application_router().fallback(move |request| files.serve(request))
+}
+
+fn application_router() -> Router {
     let counter = std::cell::Cell::new(0_u32);
     Router::new()
-        .route(Method::Get, "/", index)
         .route(Method::Get, "/health", health)
         .route(Method::Post, "/echo", echo)
         .route(Method::Get, "/headers", headers)

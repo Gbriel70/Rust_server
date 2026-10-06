@@ -4,13 +4,14 @@ use std::collections::HashMap;
 
 use crate::http::request::{Method, Request};
 use crate::http::response::{Response, Status};
-use crate::http::uri::percent_decode;
+use crate::http::uri::decode_path;
 
 type Handler = Box<dyn Fn(&Request) -> Response>;
 
 #[derive(Default)]
 pub struct Router {
     routes: HashMap<String, HashMap<Method, Handler>>,
+    fallback: Option<Handler>,
 }
 
 impl Router {
@@ -20,12 +21,7 @@ impl Router {
 
     /// Registers a decoded path. Registering the same method/path replaces its handler.
     /// HEAD is generated from GET and cannot be registered separately in this router.
-    pub fn route(
-        mut self,
-        method: Method,
-        path: &str,
-        handler: impl Fn(&Request) -> Response + 'static,
-    ) -> Self {
+    pub fn route(mut self, method: Method, path: &str, handler: impl Fn(&Request) -> Response + 'static) -> Self {
         assert_ne!(
             method,
             Method::Head,
@@ -38,21 +34,22 @@ impl Router {
         self
     }
 
+    /// Exact registered paths take precedence, including their method restrictions.
+    pub fn fallback(mut self, handler: impl Fn(&Request) -> Response + 'static) -> Self {
+        self.fallback = Some(Box::new(handler));
+        self
+    }
+
     pub fn handle(&self, request: &Request) -> Response {
-        let mut segments = Vec::new();
-        for segment in request.path().split('/') {
-            let decoded = match percent_decode(segment) {
-                Ok(decoded) => decoded,
-                Err(error) => return Response::text(Status::BadRequest, &error.to_string()),
-            };
-            if decoded.contains(['/', '\\', '\0']) {
-                return Response::text(Status::BadRequest, "encoded path separator or NUL");
-            }
-            segments.push(decoded);
-        }
-        let path = segments.join("/");
+        let path = match decode_path(request.path()) {
+            Ok(path) => path,
+            Err(error) => return Response::text(Status::BadRequest, &error.to_string()),
+        };
         let Some(methods) = self.routes.get(&path) else {
-            return Response::text(Status::NotFound, "not found\n");
+            return self.fallback.as_ref().map_or_else(
+                || Response::text(Status::NotFound, "not found\n"),
+                |handler| handler(request),
+            );
         };
         // HEAD is derived from GET; the server suppresses the body on the wire.
         let method = if request.method == Method::Head {

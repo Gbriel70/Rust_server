@@ -112,16 +112,26 @@ impl ResponseReader {
             headers,
             body: Vec::new(),
         };
-        let length = response.header("Content-Length").parse::<usize>().unwrap();
+        let no_body = matches!(
+            response.status.split_whitespace().nth(1),
+            Some("204" | "304")
+        ) || response
+            .status
+            .split_whitespace()
+            .nth(1)
+            .is_some_and(|s| s.starts_with('1'));
+        let length = response
+            .optional_header("Content-Length")
+            .map_or(0, |s| s.parse::<usize>().unwrap());
         assert_eq!(
             response
                 .headers
                 .iter()
                 .filter(|(name, _)| name.eq_ignore_ascii_case("Content-Length"))
                 .count(),
-            1
+            usize::from(!no_body)
         );
-        let body_length = if head_only { 0 } else { length };
+        let body_length = if head_only || no_body { 0 } else { length };
         let consumed = end + 4 + body_length;
         while self.buf.len() < consumed {
             self.read_more();
