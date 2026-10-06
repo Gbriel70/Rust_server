@@ -397,3 +397,69 @@ wire_case!(wire_space, "GET", "/a%20b.txt", "200");
 wire_case!(wire_percent, "GET", "/100%25.txt", "200");
 wire_case!(wire_binary, "GET", "/data.bin", "200");
 wire_case!(wire_empty, "GET", "/empty.txt", "200");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    struct Temp(PathBuf);
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    #[test]
+    fn lexical_and_canonical_resolution() {
+        let base = std::env::temp_dir().join(format!(
+            "static-resolution-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&base).unwrap();
+        let temp = Temp(base);
+        let root = temp.0.join("public");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(temp.0.join("public-secret")).unwrap();
+        fs::write(temp.0.join("secret.txt"), "TOP SECRET").unwrap();
+        fs::write(temp.0.join("public-secret/leak.txt"), "TOP SECRET").unwrap();
+        fs::write(root.join("index.html"), "index").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            symlink("../secret.txt", root.join("link-out")).unwrap();
+            symlink("../public-secret", root.join("link-dir")).unwrap();
+        }
+        let files = StaticFiles::new(root).unwrap();
+        for (path, status) in [
+            ("/../secret.txt", Status::Forbidden),
+            ("/a/../../secret.txt", Status::Forbidden),
+            ("/%2e%2e/secret.txt", Status::Forbidden),
+            ("/.%2e/secret.txt", Status::Forbidden),
+            ("/..%2fsecret.txt", Status::BadRequest),
+            ("/%2e%2e%2fsecret.txt", Status::BadRequest),
+            ("/%00", Status::BadRequest),
+            ("/x%00.html", Status::BadRequest),
+            ("/./index.html", Status::Forbidden),
+            ("//index.html", Status::NotFound),
+            ("/.secret", Status::NotFound),
+            ("/%5csecret", Status::BadRequest),
+            ("/docs//", Status::NotFound),
+            ("/%zz", Status::BadRequest),
+            ("/index.html/extra", Status::NotFound),
+        ] {
+            assert_eq!(
+                files.serve(&request(Method::Get, path)).status,
+                status,
+                "{path}"
+            );
+        }
+        #[cfg(unix)]
+        for path in ["/link-out", "/link-dir/leak.txt"] {
+            assert_eq!(
+                files.serve(&request(Method::Get, path)).status,
+                Status::Forbidden
+            );
+        }
+    }
+}
