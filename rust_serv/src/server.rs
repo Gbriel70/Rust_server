@@ -5,21 +5,24 @@ use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 
 use crate::error::Error;
 use crate::http::parser::{ParseError, parse_request};
-use crate::http::request::Request;
+use crate::http::request::{Method, Request};
 use crate::http::response::{Response, Status};
+use crate::router::Router;
 
 const BUFFER_SIZE: usize = 1024;
 
 /// TCP server responsible for receiving HTTP requests and sending responses.
 pub struct Server {
     listener: TcpListener,
+    router: Router,
 }
 
 impl Server {
     /// Opens a TCP listener at the provided address.
-    pub fn bind(addr: impl ToSocketAddrs) -> io::Result<Self> {
+    pub fn bind(addr: impl ToSocketAddrs, router: Router) -> io::Result<Self> {
         Ok(Self {
             listener: TcpListener::bind(addr)?,
+            router,
         })
     }
 
@@ -32,7 +35,7 @@ impl Server {
         for stream in self.listener.incoming() {
             match stream {
                 Ok(stream) => {
-                    if let Err(error) = handle_connection(stream) {
+                    if let Err(error) = handle_connection(stream, &self.router) {
                         eprintln!("Connection error: {error}");
                     }
                 }
@@ -68,27 +71,28 @@ fn read_request(
     }
 }
 
-fn handle_connection(mut stream: TcpStream) -> Result<(), Error> {
+fn handle_connection(mut stream: TcpStream, router: &Router) -> Result<(), Error> {
     let mut buf = Vec::with_capacity(BUFFER_SIZE);
     // Each connection produces at most one response and is then closed.
-    let response = match read_request(&mut stream, &mut buf) {
-        Ok(Some((request, _))) => handle(&request),
+    let (response, head_only) = match read_request(&mut stream, &mut buf) {
+        Ok(Some((request, _))) => (router.handle(&request), request.method == Method::Head),
         Ok(None) => return Ok(()),
-        Err(Error::Parse(error)) => Response::new(status_for(&error))
-            .header("Content-Type", "text/plain")
-            .body(error.to_string()),
+        // Parsing can fail before a Request exists. Preserve HEAD framing even then.
+        Err(Error::Parse(error)) => (
+            Response::new(status_for(&error))
+                .header("Content-Type", "text/plain")
+                .body(error.to_string()),
+            buf.starts_with(b"HEAD "),
+        ),
         Err(error) => return Err(error),
     };
-    response
-        .header("Connection", "close")
-        .write_to(&mut stream)?;
+    let response = response.header("Connection", "close");
+    if head_only {
+        response.write_head_to(&mut stream)?;
+    } else {
+        response.write_to(&mut stream)?;
+    }
     Ok(())
-}
-
-fn handle(_request: &Request) -> Response {
-    Response::new(Status::Ok)
-        .header("Content-Type", "text/plain")
-        .body("hello")
 }
 
 /// Maps parsing errors to appropriate HTTP statuses for the client.

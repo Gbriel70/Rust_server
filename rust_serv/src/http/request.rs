@@ -2,7 +2,7 @@
 
 pub use super::headers::Headers;
 
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 /// Represents an HTTP request that has already been validated by the parser.
 #[derive(Debug, PartialEq)]
@@ -19,8 +19,22 @@ pub struct Request {
     pub body: Vec<u8>,
 }
 
+impl Request {
+    /// Borrows the path without decoding it or normalizing its segments.
+    pub fn path(&self) -> &str {
+        self.target
+            .split_once('?')
+            .map_or(self.target.as_str(), |(path, _)| path)
+    }
+
+    /// Borrows everything after the first `?`, including an empty query.
+    pub fn query(&self) -> Option<&str> {
+        self.target.split_once('?').map(|(_, query)| query)
+    }
+}
+
 /// HTTP methods accepted by the server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Method {
     Get,
     Post,
@@ -28,6 +42,25 @@ pub enum Method {
     Delete,
     Head,
     Options,
+}
+
+impl Method {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Post => "POST",
+            Self::Put => "PUT",
+            Self::Delete => "DELETE",
+            Self::Head => "HEAD",
+            Self::Options => "OPTIONS",
+        }
+    }
+}
+
+impl fmt::Display for Method {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 impl FromStr for Method {

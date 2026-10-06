@@ -10,6 +10,8 @@ use super::headers::Headers;
 pub enum Status {
     Ok,
     BadRequest,
+    NotFound,
+    MethodNotAllowed,
     PayloadTooLarge,
     RequestHeaderFieldsTooLarge,
     NotImplemented,
@@ -22,6 +24,8 @@ impl Status {
         match self {
             Self::Ok => 200,
             Self::BadRequest => 400,
+            Self::NotFound => 404,
+            Self::MethodNotAllowed => 405,
             Self::PayloadTooLarge => 413,
             Self::RequestHeaderFieldsTooLarge => 431,
             Self::NotImplemented => 501,
@@ -33,6 +37,8 @@ impl Status {
         match self {
             Self::Ok => "OK",
             Self::BadRequest => "Bad Request",
+            Self::NotFound => "Not Found",
+            Self::MethodNotAllowed => "Method Not Allowed",
             Self::PayloadTooLarge => "Payload Too Large",
             Self::RequestHeaderFieldsTooLarge => "Request Header Fields Too Large",
             Self::NotImplemented => "Not Implemented",
@@ -74,6 +80,12 @@ impl Response {
         self
     }
 
+    pub fn text(status: Status, text: &str) -> Self {
+        Self::new(status)
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .body(text)
+    }
+
     /// Sets the response body and allows method chaining.
     pub fn body(mut self, bytes: impl Into<Vec<u8>>) -> Self {
         self.body = bytes.into();
@@ -86,6 +98,15 @@ impl Response {
     /// `Content-Length` is ignored; the body's actual byte length is always
     /// used to frame the response.
     pub fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.write_response(w, true)
+    }
+
+    /// Serializes the same headers as GET, retaining its body length, without the body.
+    pub fn write_head_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.write_response(w, false)
+    }
+
+    fn write_response<W: Write>(&self, w: &mut W, include_body: bool) -> io::Result<()> {
         for (name, value) in self.headers.iter() {
             if name
                 .bytes()
@@ -106,7 +127,9 @@ impl Response {
             }
         }
         write!(bytes, "Content-Length: {}\r\n\r\n", self.body.len())?;
-        bytes.extend_from_slice(&self.body);
+        if include_body {
+            bytes.extend_from_slice(&self.body);
+        }
         w.write_all(&bytes)
     }
 }

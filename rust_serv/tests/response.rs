@@ -92,6 +92,8 @@ mod tests {
         for (status, code, reason) in [
             (Status::Ok, 200, "OK"),
             (Status::BadRequest, 400, "Bad Request"),
+            (Status::NotFound, 404, "Not Found"),
+            (Status::MethodNotAllowed, 405, "Method Not Allowed"),
             (Status::PayloadTooLarge, 413, "Payload Too Large"),
             (
                 Status::RequestHeaderFieldsTooLarge,
@@ -113,5 +115,50 @@ mod tests {
                 format!("HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\n\r\n").as_bytes()
             );
         }
+    }
+
+    #[test]
+    fn head_preserves_headers_and_length_but_omits_binary_body() {
+        let response = Response::new(Status::Ok)
+            .header("Content-Type", "application/octet-stream")
+            .header("content-length", "999")
+            .body(vec![0xff, 0, 1]);
+        let mut head = Vec::new();
+        response.write_head_to(&mut head).unwrap();
+        assert_eq!(head, b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 3\r\n\r\n");
+        let full = serialized(response);
+        assert_eq!(&full[..head.len()], head);
+        assert_eq!(&full[head.len()..], &[0xff, 0, 1]);
+    }
+
+    #[test]
+    fn head_validates_headers_before_writing() {
+        let mut bytes = Vec::new();
+        let error = Response::new(Status::Ok)
+            .header("X", "a\r\nb")
+            .write_head_to(&mut bytes)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn head_propagates_write_errors() {
+        struct Broken;
+        impl std::io::Write for Broken {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        assert_eq!(
+            Response::new(Status::Ok)
+                .write_head_to(&mut Broken)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::BrokenPipe
+        );
     }
 }
