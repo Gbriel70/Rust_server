@@ -15,15 +15,15 @@ pub fn static_router(files: crate::static_files::StaticFiles) -> Router {
 }
 
 fn application_router() -> Router {
-    let counter = std::cell::Cell::new(0_u32);
+    let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     Router::new()
         .route(Method::Get, "/health", health)
         .route(Method::Post, "/echo", echo)
         .route(Method::Get, "/headers", headers)
         .route(Method::Get, "/hello", hello)
         .route(Method::Get, "/counter", move |_request| {
-            counter.set(counter.get() + 1);
-            Response::text(Status::Ok, &counter.get().to_string())
+            let count = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            Response::text(Status::Ok, &count.to_string())
         })
 }
 

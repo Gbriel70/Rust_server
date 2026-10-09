@@ -127,6 +127,11 @@ impl Connection {
         }
     }
 
+    /// Bytes already read by this connection belong to an admitted pipelined request.
+    pub(crate) fn has_pending_request(&self) -> bool {
+        !self.buf.is_empty()
+    }
+
     /// Used when parsing failed before a Request could be constructed.
     pub(crate) fn pending_is_head(&self) -> bool {
         self.buf.starts_with(b"HEAD ")

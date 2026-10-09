@@ -124,6 +124,7 @@ impl StaticFiles {
         Ok(response.body(body))
     }
 }
+
 fn io_status(error: io::Error) -> Status {
     match error.kind() {
         io::ErrorKind::NotFound | io::ErrorKind::NotADirectory => Status::NotFound,
@@ -131,6 +132,7 @@ fn io_status(error: io::Error) -> Status {
         _ => Status::InternalServerError,
     }
 }
+
 pub fn mime_for(path: &Path) -> &'static str {
     match path
         .extension()
@@ -158,4 +160,3 @@ pub fn mime_for(path: &Path) -> &'static str {
         _ => "application/octet-stream",
     }
 }
-

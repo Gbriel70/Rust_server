@@ -1,7 +1,9 @@
 //! IMF-fixdate only; obsolete HTTP date formats are deliberately unsupported.
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS: [&str; 12] = [ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 fn civil(days: i64) -> (i64, i64, i64) {
     let z = days + 719468;

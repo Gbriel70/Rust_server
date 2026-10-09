@@ -6,7 +6,7 @@ use crate::http::request::{Method, Request};
 use crate::http::response::{Response, Status};
 use crate::http::uri::decode_path;
 
-type Handler = Box<dyn Fn(&Request) -> Response>;
+type Handler = Box<dyn Fn(&Request) -> Response + Send + Sync>;
 
 #[derive(Default)]
 pub struct Router {
@@ -21,7 +21,12 @@ impl Router {
 
     /// Registers a decoded path. Registering the same method/path replaces its handler.
     /// HEAD is generated from GET and cannot be registered separately in this router.
-    pub fn route(mut self, method: Method, path: &str, handler: impl Fn(&Request) -> Response + 'static) -> Self {
+    pub fn route(
+        mut self,
+        method: Method,
+        path: &str,
+        handler: impl Fn(&Request) -> Response + Send + Sync + 'static,
+    ) -> Self {
         assert_ne!(
             method,
             Method::Head,
@@ -35,7 +40,10 @@ impl Router {
     }
 
     /// Exact registered paths take precedence, including their method restrictions.
-    pub fn fallback(mut self, handler: impl Fn(&Request) -> Response + 'static) -> Self {
+    pub fn fallback(
+        mut self,
+        handler: impl Fn(&Request) -> Response + Send + Sync + 'static,
+    ) -> Self {
         self.fallback = Some(Box::new(handler));
         self
     }

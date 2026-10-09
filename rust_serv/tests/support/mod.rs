@@ -28,7 +28,7 @@ pub fn start_server() -> SocketAddr {
 pub fn start_server_with_config(config: Config) -> SocketAddr {
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     thread::spawn(move || {
-        // Construct non-Send handlers on the serving thread.
+        // Each test server owns an independent router and its shared counters.
         let server =
             Server::bind_with_config("127.0.0.1:0", rust_serv::routes::default_router(), config)
                 .unwrap();
