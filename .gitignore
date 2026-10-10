@@ -7,3 +7,5 @@ cargo-crash.log
 .serena
 validation
 experiments
+*.out
+*.c

@@ -13,3 +13,8 @@ pub mod static_files;
 pub mod cli;
 pub mod stats;
 pub mod thread_pool;
+
+#[cfg(target_os = "linux")]
+pub mod epoll;
+#[cfg(target_os = "linux")]
+pub mod event_loop;

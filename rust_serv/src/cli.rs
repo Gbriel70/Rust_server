@@ -14,6 +14,7 @@ impl Options {
         let mut root = "./public".to_owned();
         let mut addr = "127.0.0.1:8080".to_owned();
         let mut mode = "pool".to_owned();
+        let mut trigger = "level".to_owned();
         let mut workers = 4;
         let mut queue_capacity = 64;
         while let Some(arg) = args.next() {
@@ -24,6 +25,7 @@ impl Options {
                 "--root" => root = value,
                 "--addr" => addr = value,
                 "--mode" => mode = value,
+                "--trigger" => trigger = value,
                 "--workers" => {
                     workers = value.parse().map_err(|_| invalid("invalid worker count"))?
                 }
@@ -34,7 +36,7 @@ impl Options {
                 }
                 _ => {
                     return Err(invalid(
-                        "usage: rust_serv [--root dir] [--addr host:port] [--mode thread|pool] [--workers N] [--queue N]",
+                        "usage: rust_serv [--root dir] [--addr host:port] [--mode thread|pool|epoll] [--trigger level|edge] [--workers N] [--queue N]",
                     ));
                 }
             }
@@ -42,14 +44,21 @@ impl Options {
         if workers == 0 || queue_capacity == 0 {
             return Err(invalid("workers and queue must be positive"));
         }
+        let edge_triggered = match trigger.as_str() {
+            "level" => false,
+            "edge" => true,
+            _ => return Err(invalid("--trigger must be level or edge")),
+        };
         let execution = match mode.as_str() {
             "thread" => Execution::ThreadPerConnection,
             "pool" => Execution::Pool {
                 workers,
                 queue_capacity,
             },
-            _ => return Err(invalid("--mode must be thread or pool")),
+            "epoll" => Execution::Epoll { edge_triggered },
+            _ => return Err(invalid("--mode must be thread, pool or epoll")),
         };
+        execution.validate()?;
         Ok(Self {
             root,
             addr,

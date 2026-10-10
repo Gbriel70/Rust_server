@@ -26,6 +26,9 @@ use std::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Execution {
     ThreadPerConnection,
+    Epoll {
+        edge_triggered: bool,
+    },
     Pool {
         workers: usize,
         queue_capacity: usize,
@@ -44,6 +47,13 @@ impl Execution {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "workers and queue capacity must be positive",
+            ));
+        }
+        #[cfg(not(target_os = "linux"))]
+        if matches!(self, Self::Epoll { .. }) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "epoll requires Linux",
             ));
         }
         Ok(())
@@ -121,8 +131,27 @@ impl Server {
                 "server can only run once",
             ));
         }
+        if let Execution::Epoll { edge_triggered } = self.execution {
+            #[cfg(target_os = "linux")]
+            return crate::event_loop::run(
+                &self.listener,
+                &self.router,
+                self.config,
+                &self.stats,
+                &self.shutdown,
+                edge_triggered,
+            );
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = edge_triggered;
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "epoll requires Linux",
+                ));
+            }
+        }
         let mut pool = match self.execution {
-            Execution::ThreadPerConnection => None,
+            Execution::ThreadPerConnection | Execution::Epoll { .. } => None,
             Execution::Pool {
                 workers,
                 queue_capacity,
