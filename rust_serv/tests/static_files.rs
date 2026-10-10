@@ -276,6 +276,7 @@ fn socket_keep_alive_after_304() {
             routes::static_router(StaticFiles::new(root).unwrap()),
         )
         .unwrap();
+        let server = support::with_backend(server);
         tx.send(server.local_addr().unwrap()).unwrap();
         server.run().unwrap();
     });
@@ -336,6 +337,7 @@ macro_rules! wire_case {
                     routes::static_router(StaticFiles::new(root).unwrap()),
                 )
                 .unwrap();
+                let server = support::with_backend(server);
                 tx.send(server.local_addr().unwrap()).unwrap();
                 server.run().unwrap();
             });

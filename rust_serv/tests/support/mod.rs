@@ -32,10 +32,24 @@ pub fn start_server_with_config(config: Config) -> SocketAddr {
         let server =
             Server::bind_with_config("127.0.0.1:0", rust_serv::routes::default_router(), config)
                 .unwrap();
+        let server = with_backend(server);
         sender.send(server.local_addr().unwrap()).unwrap();
         server.run().unwrap();
     });
     receiver.recv_timeout(Duration::from_secs(2)).unwrap()
+}
+
+/// Select only the server fixture. The TCP client and assertions are unchanged.
+pub fn with_backend(server: Server) -> Server {
+    match std::env::var("RUST_SERV_TEST_MODE").as_deref() {
+        Err(_) | Ok("thread") => server,
+        Ok("tokio") => server
+            .with_execution(rust_serv::server::Execution::Tokio {
+                max_connections: 16_384,
+            })
+            .unwrap(),
+        Ok(value) => panic!("unknown test backend: {value}"),
+    }
 }
 
 pub fn connect(addr: SocketAddr) -> TcpStream {

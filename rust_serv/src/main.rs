@@ -1,10 +1,28 @@
-use rust_serv::{cli::Options, routes, server::Server, static_files::StaticFiles};
+use rust_serv::{
+    cli::Options,
+    connection::Config,
+    routes,
+    server::{Execution, Server},
+    static_files::StaticFiles,
+};
 
-fn main() -> std::io::Result<()> {
+#[tokio::main(worker_threads = 4)]
+async fn main() -> std::io::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "rust_serv=info".into()),
+        )
+        .with_writer(std::io::stderr)
+        .init();
     let options = Options::parse(std::env::args().skip(1))?;
-    let server = Server::bind(
+    let server = Server::bind_with_config(
         &options.addr,
         routes::static_router(StaticFiles::new(options.root)?),
+        Config {
+            idle_timeout: options.idle_timeout,
+            ..Config::default()
+        },
     )?
     .with_execution(options.execution)?;
     let shutdown = server.shutdown_handle();
@@ -19,9 +37,13 @@ fn main() -> std::io::Result<()> {
             }
         })?;
     println!(
-        "Listening on {} ({:?}); press Enter for graceful shutdown",
+        "Listening on {} ({:?}); press Enter for graceful shutdown (Tokio also accepts Ctrl-C)",
         server.local_addr()?,
         options.execution
     );
-    server.run()
+    if matches!(options.execution, Execution::Tokio { .. }) {
+        server.run_async().await
+    } else {
+        server.run()
+    }
 }

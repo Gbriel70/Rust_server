@@ -24,7 +24,8 @@ fn fails(file: &str, expected: &str) {
     assert!(!result.status.success(), "sample unexpectedly compiled");
     let error = String::from_utf8(result.stderr).unwrap();
     assert!(
-        error.contains("E0277") && error.contains(expected),
+        (error.contains("E0277") || error.contains("future cannot be sent between threads safely"))
+            && error.contains(expected),
         "{error}"
     );
 }
@@ -35,4 +36,9 @@ fn rc_cannot_cross_thread_boundary() {
 #[test]
 fn arc_does_not_make_cell_thread_safe() {
     fails("cell_is_not_sync.rs", "Sync");
+}
+
+#[test]
+fn mutex_guard_across_await_makes_future_not_send() {
+    fails("guard_across_await.rs", "MutexGuard");
 }

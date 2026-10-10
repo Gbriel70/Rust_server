@@ -49,3 +49,18 @@ fn rejects_invalid_values() {
         assert!(parse(args).is_err(), "{args:?}");
     }
 }
+
+#[test]
+fn configurable_idle_timeout() {
+    assert_eq!(
+        parse(&[]).unwrap().idle_timeout,
+        std::time::Duration::from_secs(5)
+    );
+    assert_eq!(
+        parse(&["--idle-timeout", "30"]).unwrap().idle_timeout,
+        std::time::Duration::from_secs(30)
+    );
+    for value in ["0", "-1", "bad", "18446744073709551615"] {
+        assert!(parse(&["--idle-timeout", value]).is_err());
+    }
+}

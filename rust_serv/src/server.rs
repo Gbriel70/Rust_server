@@ -26,6 +26,9 @@ use std::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Execution {
     ThreadPerConnection,
+    Tokio {
+        max_connections: usize,
+    },
     Epoll {
         edge_triggered: bool,
     },
@@ -49,6 +52,14 @@ impl Execution {
                 "workers and queue capacity must be positive",
             ));
         }
+        if let Self::Tokio { max_connections } = self
+            && (max_connections == 0 || max_connections > tokio::sync::Semaphore::MAX_PERMITS)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid connection limit",
+            ));
+        }
         #[cfg(not(target_os = "linux"))]
         if matches!(self, Self::Epoll { .. }) {
             return Err(io::Error::new(
@@ -61,13 +72,19 @@ impl Execution {
 }
 
 #[derive(Clone, Default)]
-pub struct ShutdownHandle(Arc<AtomicBool>);
+pub struct ShutdownHandle(Arc<ShutdownState>);
+#[derive(Default)]
+struct ShutdownState {
+    requested: AtomicBool,
+    notify: tokio::sync::Notify,
+}
 impl ShutdownHandle {
     pub fn request_shutdown(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0.requested.store(true, Ordering::Release);
+        self.0.notify.notify_waiters();
     }
     pub fn is_requested(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.requested.load(Ordering::Acquire)
     }
 }
 
@@ -79,6 +96,20 @@ pub struct Server {
     shutdown: ShutdownHandle,
     running: AtomicBool,
     stats: Arc<Stats>,
+}
+impl ShutdownHandle {
+    /// Register before checking the flag: notify_waiters does not store permits.
+    pub(crate) async fn notified(&self) {
+        loop {
+            let notified = self.0.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_requested() {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 impl Server {
     pub fn bind(addr: impl ToSocketAddrs, router: Router) -> io::Result<Self> {
@@ -124,7 +155,46 @@ impl Server {
     /// Stop accepting on shutdown, then drain all admitted jobs and join threads.
     /// An active request is not interrupted. Idle sockets remain subject to Config;
     /// arbitrary handlers and local filesystem I/O have no total shutdown deadline.
+    /// Tokio callers use run_async; synchronous tests/tools can use this bridge.
+    pub async fn run_async(&self) -> io::Result<()> {
+        let Execution::Tokio { max_connections } = self.execution else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "run_async requires Tokio mode",
+            ));
+        };
+        if self.running.swap(true, Ordering::AcqRel) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "server can only run once",
+            ));
+        }
+        crate::tokio_io::run(
+            &self.listener,
+            &self.router,
+            self.config,
+            &self.stats,
+            &self.shutdown,
+            max_connections,
+        )
+        .await
+    }
+
     pub fn run(&self) -> io::Result<()> {
+        if matches!(self.execution, Execution::Tokio { .. }) {
+            if tokio::runtime::Handle::try_current().is_ok() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "use run_async inside a Tokio runtime",
+                ));
+            }
+            return tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .max_blocking_threads(64)
+                .enable_all()
+                .build()?
+                .block_on(self.run_async());
+        }
         if self.running.swap(true, Ordering::AcqRel) {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -151,7 +221,9 @@ impl Server {
             }
         }
         let mut pool = match self.execution {
-            Execution::ThreadPerConnection | Execution::Epoll { .. } => None,
+            Execution::ThreadPerConnection | Execution::Epoll { .. } | Execution::Tokio { .. } => {
+                None
+            }
             Execution::Pool {
                 workers,
                 queue_capacity,
