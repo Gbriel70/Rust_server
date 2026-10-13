@@ -297,10 +297,10 @@ mod tests {
     }
 
     #[test]
-    fn transfer_encoding_wins_over_content_length() {
+    fn transfer_encoding_with_content_length_is_ambiguous() {
         let raw = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nContent-Length: abc\r\n\r\n";
 
-        assert_eq!(parse_err(raw), ParseError::UnsupportedTransferEncoding);
+        assert_eq!(parse_err(raw), ParseError::AmbiguousFraming);
     }
 
     // ---------- limits ----------

@@ -5,7 +5,7 @@ use std::net::{Shutdown, TcpStream};
 use std::time::{Duration, Instant};
 
 use crate::error::Error;
-use crate::http::parser::parse_request;
+use crate::http::parser::RequestParser;
 use crate::http::request::Request;
 use crate::http::response::Response;
 
@@ -49,6 +49,7 @@ impl Config {
 }
 
 pub struct Connection {
+    parser: RequestParser,
     stream: TcpStream,
     buf: Vec<u8>,
     config: Config,
@@ -62,6 +63,7 @@ impl Connection {
         config.validate()?;
         stream.set_write_timeout(Some(config.write_timeout))?;
         Ok(Self {
+            parser: RequestParser::default(),
             stream,
             buf: Vec::with_capacity(BUFFER_SIZE),
             config,
@@ -78,7 +80,7 @@ impl Connection {
         let idle_started = Instant::now();
         loop {
             // Pipelined requests must be consumed before waiting for more bytes.
-            if let Some((request, consumed)) = parse_request(&self.buf)? {
+            if let Some((request, consumed)) = self.parser.parse(&self.buf)? {
                 self.buf.drain(..consumed);
                 return Ok(Some(request));
             }

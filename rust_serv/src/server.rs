@@ -368,6 +368,12 @@ fn handle_connection(
             ),
             Err(error) => return Err(error),
         };
+        if version == Version::Http10 && response.is_chunked() {
+            response = Response::text(
+                Status::HttpVersionNotSupported,
+                "streaming requires HTTP/1.1",
+            );
+        }
         if !keep_alive {
             response = response.header("Connection", "close");
         } else if version == Version::Http10 {
@@ -392,7 +398,9 @@ pub fn status_for(error: &ParseError) -> Status {
         ParseError::MalformedRequestLine
         | ParseError::MalformedHeader
         | ParseError::MissingHost
-        | ParseError::InvalidContentLength => Status::BadRequest,
+        | ParseError::InvalidContentLength
+        | ParseError::AmbiguousFraming
+        | ParseError::MalformedChunk => Status::BadRequest,
         ParseError::BodyTooLarge => Status::PayloadTooLarge,
         ParseError::HeadersTooLarge => Status::RequestHeaderFieldsTooLarge,
         ParseError::UnsupportedMethod | ParseError::UnsupportedTransferEncoding => {

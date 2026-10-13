@@ -3,7 +3,8 @@ use crate::{
     connection::Config,
     epoll::Epoll,
     http::{
-        parser::parse_request,
+        body::{BodyCursor, Chunk, encode_chunk},
+        parser::RequestParser,
         request::{Method, Version},
         response::{Response, Status},
     },
@@ -28,6 +29,9 @@ pub enum ConnectionState {
     Writing {
         bytes: Vec<u8>,
         offset: usize,
+        cursor: Option<BodyCursor>,
+        chunked: bool,
+        waiting: Option<Instant>,
         close_after: bool,
         started: Instant,
     },
@@ -37,6 +41,7 @@ pub enum ConnectionState {
     },
 }
 struct Connection {
+    parser: RequestParser,
     stream: TcpStream,
     token: u64,
     input: Vec<u8>,
@@ -56,6 +61,9 @@ const LISTENER: u64 = 0;
 impl Connection {
     fn flags(&self, edge: bool) -> u32 {
         let direction = match self.state {
+            ConnectionState::Writing {
+                waiting: Some(_), ..
+            } => 0,
             ConnectionState::Writing { .. } => libc::EPOLLOUT,
             _ => libc::EPOLLIN,
         };
@@ -74,20 +82,30 @@ impl Connection {
         close: bool,
         version: Version,
     ) -> io::Result<()> {
+        if version == Version::Http10 && response.is_chunked() {
+            response = Response::text(
+                Status::HttpVersionNotSupported,
+                "streaming requires HTTP/1.1",
+            );
+        }
         if close {
             response = response.header("Connection", "close");
         } else if version == Version::Http10 {
             response = response.header("Connection", "keep-alive");
         }
         let mut bytes = Vec::new();
-        if head {
-            response.write_head_to(&mut bytes)?;
+        response.write_headers(&mut bytes)?;
+        let cursor = if !head && response.allows_body() {
+            Some(response.body.cursor()?)
         } else {
-            response.write_to(&mut bytes)?;
-        }
+            None
+        };
         self.state = ConnectionState::Writing {
             bytes,
             offset: 0,
+            cursor,
+            chunked: !head && response.is_chunked(),
+            waiting: None,
             close_after: close,
             started: Instant::now(),
         };
@@ -105,7 +123,7 @@ impl Connection {
             match &mut self.state {
                 ConnectionState::Reading => {
                     // Parse first: a pipelined request may already be in user memory.
-                    match parse_request(&self.input) {
+                    match self.parser.parse(&self.input) {
                         Ok(Some((request, consumed))) => {
                             self.input.drain(..consumed);
                             self.request_started = if self.input.is_empty() {
@@ -198,9 +216,62 @@ impl Connection {
                 ConnectionState::Writing {
                     bytes,
                     offset,
+                    cursor,
+                    chunked,
+                    waiting,
                     close_after,
                     started,
                 } => {
+                    if *offset == bytes.len() {
+                        bytes.clear();
+                        *offset = 0;
+                        if shutdown && let Some(BodyCursor::Stream { events, next, .. }) = cursor {
+                            *events = *next;
+                        }
+                        let next = match cursor {
+                            Some(c) => c.next_chunk()?,
+                            None => Chunk::Done,
+                        };
+                        match next {
+                            Chunk::Data(data) => {
+                                *bytes = if *chunked {
+                                    encode_chunk(&data)
+                                } else {
+                                    data.to_vec()
+                                };
+                                *waiting = None;
+                                *started = Instant::now();
+                            }
+                            Chunk::Pending(ready) => {
+                                *waiting = Some(ready);
+                                return Ok((true, false));
+                            }
+                            Chunk::Done if *chunked => {
+                                *bytes = b"0\r\n\r\n".to_vec();
+                                *chunked = false;
+                                *cursor = None;
+                                *waiting = None;
+                                *started = Instant::now();
+                            }
+                            Chunk::Done => {
+                                stats.responses.fetch_add(1, Ordering::Relaxed);
+                                if *close_after {
+                                    self.stream.shutdown(Shutdown::Write)?;
+                                    self.input.clear();
+                                    self.state = ConnectionState::Closing {
+                                        deadline: Instant::now() + Duration::from_secs(1),
+                                        drained: 0,
+                                    };
+                                } else {
+                                    if self.input.is_empty() {
+                                        self.last_read = Instant::now();
+                                    }
+                                    self.state = ConnectionState::Reading;
+                                }
+                                continue;
+                            }
+                        }
+                    }
                     if started.elapsed() >= config.write_timeout {
                         return Ok((false, false));
                     }
@@ -211,29 +282,15 @@ impl Connection {
                                 "socket wrote zero bytes",
                             ));
                         }
-                        Ok(n) => *offset += n,
+                        Ok(n) => {
+                            *offset += n;
+                            *started = Instant::now();
+                        }
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             return Ok((true, false));
                         }
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                         Err(e) => return Err(e),
-                    }
-                    if *offset == bytes.len() {
-                        stats.responses.fetch_add(1, Ordering::Relaxed);
-                        if *close_after {
-                            self.stream.shutdown(Shutdown::Write)?;
-                            self.input.clear();
-                            self.state = ConnectionState::Closing {
-                                deadline: Instant::now() + Duration::from_secs(1),
-                                drained: 0,
-                            };
-                        } else {
-                            if self.input.is_empty() {
-                                self.last_read = Instant::now();
-                            }
-                            self.state = ConnectionState::Reading;
-                        }
-                        // Explicitly resume reading after writing, including in ET.
                     }
                 }
                 ConnectionState::Closing { deadline, drained } => {
@@ -264,7 +321,12 @@ impl Connection {
                         .is_some_and(|t| t.elapsed() >= config.request_timeout)
                     || (self.input.is_empty() && self.last_read.elapsed() >= config.idle_timeout)
             }
-            ConnectionState::Writing { started, .. } => started.elapsed() >= config.write_timeout,
+            ConnectionState::Writing {
+                started, waiting, ..
+            } => waiting.map_or_else(
+                || started.elapsed() >= config.write_timeout,
+                |ready| shutdown || Instant::now() >= ready,
+            ),
             ConnectionState::Closing { deadline, .. } => Instant::now() >= *deadline,
         }
     }
@@ -359,6 +421,7 @@ pub(crate) fn run(
                             .checked_add(1)
                             .ok_or_else(|| io::Error::other("epoll token space exhausted"))?;
                         let mut connection = Connection {
+                            parser: RequestParser::default(),
                             stream,
                             token,
                             input: Vec::new(),

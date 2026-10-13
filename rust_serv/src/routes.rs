@@ -1,7 +1,7 @@
 //! The application's routes, shared by the executable and integration tests.
 
 use crate::http::request::{Method, Request};
-use crate::http::response::{Response, Status};
+use crate::http::response::{Body, Response, Status};
 use crate::http::uri::percent_decode;
 use crate::router::Router;
 
@@ -18,6 +18,16 @@ fn application_router() -> Router {
     let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     Router::new()
         .route(Method::Get, "/health", health)
+        .route(Method::Get, "/stream", |_| {
+            Response::new(Status::Ok)
+                .header("Content-Type", "text/event-stream; charset=utf-8")
+                .header("Cache-Control", "no-cache")
+                .header("X-Content-Type-Options", "nosniff")
+                .body(Body::Stream {
+                    interval: std::time::Duration::from_millis(250),
+                    events: 10,
+                })
+        })
         .route(Method::Post, "/echo", echo)
         .route(Method::Get, "/headers", headers)
         .route(Method::Get, "/hello", hello)

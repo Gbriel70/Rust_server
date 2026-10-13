@@ -59,7 +59,7 @@ error_test!(
 );
 error_test!(
     transfer_encoding,
-    b"GET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n",
+    b"GET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n",
     "HTTP/1.1 501 Not Implemented",
     "unsupported Transfer-Encoding"
 );

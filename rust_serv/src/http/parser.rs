@@ -7,7 +7,7 @@ use crate::http::request::{Method, Request, Version};
 
 /// Maximum size of the request head (request line + headers + final CRLF CRLF).
 pub const MAX_HEAD: usize = 8 * 1024;
-/// Maximum accepted body size (Content-Length).
+/// Maximum decoded request body size, for fixed-length and chunked input.
 pub const MAX_BODY: usize = 1024 * 1024;
 
 /// Reasons why a request cannot be accepted.
@@ -29,8 +29,10 @@ pub enum ParseError {
     InvalidContentLength,
     /// The declared body exceeds `MAX_BODY` bytes.
     BodyTooLarge,
-    /// The server does not implement `Transfer-Encoding`.
+    /// The requested transfer coding or coding chain is not implemented.
     UnsupportedTransferEncoding,
+    AmbiguousFraming,
+    MalformedChunk,
 }
 
 /// Converts a parsing error into a message suitable for logs and responses.
@@ -46,6 +48,8 @@ impl std::fmt::Display for ParseError {
             Self::InvalidContentLength => "invalid Content-Length",
             Self::BodyTooLarge => "request body too large",
             Self::UnsupportedTransferEncoding => "unsupported Transfer-Encoding",
+            Self::AmbiguousFraming => "ambiguous message framing",
+            Self::MalformedChunk => "malformed chunked body",
         };
         f.write_str(message)
     }
@@ -61,68 +65,237 @@ impl std::error::Error for ParseError {}
 ///
 /// The result depends only on the bytes in `buf`, never on how they were split across reads.
 pub fn parse_request(buf: &[u8]) -> Result<Option<(Request, usize)>, ParseError> {
-    // The head ends at the first "\r\n\r\n". Without it the request is either
-    // incomplete or already too large to ever be accepted.
-    let head_end = match buf.windows(4).position(|window| window == b"\r\n\r\n") {
-        Some(pos) => pos,
-        None => {
-            if buf.len() > MAX_HEAD {
-                return Err(ParseError::HeadersTooLarge);
+    RequestParser::default().parse(buf)
+}
+
+#[derive(Debug, Default)]
+enum BodyState {
+    #[default]
+    Head,
+    Fixed(usize),
+    Size,
+    Data(usize),
+    DataCrlf,
+    Trailers,
+}
+/// Holds progress across reads. The caller retains the unconsumed request prefix
+/// until completion; pipelined bytes after `consumed` belong to the next request.
+#[derive(Debug, Default)]
+pub struct RequestParser {
+    request: Option<Request>,
+    offset: usize,
+    framing_bytes: usize,
+    state: BodyState,
+}
+impl RequestParser {
+    pub fn parse(&mut self, buf: &[u8]) -> Result<Option<(Request, usize)>, ParseError> {
+        loop {
+            match self.state {
+                BodyState::Head => {
+                    let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        return if buf.len() > MAX_HEAD {
+                            Err(ParseError::HeadersTooLarge)
+                        } else {
+                            Ok(None)
+                        };
+                    };
+                    if end + 4 > MAX_HEAD {
+                        return Err(ParseError::HeadersTooLarge);
+                    }
+                    let head = std::str::from_utf8(&buf[..end])
+                        .map_err(|_| ParseError::MalformedHeader)?;
+                    let mut lines = head.split("\r\n");
+                    let (method, target, version) =
+                        parse_request_line(lines.next().ok_or(ParseError::MalformedRequestLine)?)?;
+                    let headers = parse_headers(lines)?;
+                    validate_host(version, &headers)?;
+                    let encodings: Vec<_> = headers
+                        .iter()
+                        .filter(|(n, _)| n.eq_ignore_ascii_case("Transfer-Encoding"))
+                        .map(|(_, v)| v)
+                        .collect();
+                    if !encodings.is_empty() && headers.get("Content-Length").is_some() {
+                        return Err(ParseError::AmbiguousFraming);
+                    }
+                    self.state = if !encodings.is_empty() {
+                        if version == Version::Http10 || encodings.len() != 1 {
+                            return Err(ParseError::AmbiguousFraming);
+                        }
+                        if !encodings[0].eq_ignore_ascii_case("chunked") {
+                            return Err(ParseError::UnsupportedTransferEncoding);
+                        }
+                        BodyState::Size
+                    } else {
+                        let len = parse_content_length(&headers)?;
+                        if len > MAX_BODY {
+                            return Err(ParseError::BodyTooLarge);
+                        }
+                        BodyState::Fixed(len)
+                    };
+                    self.offset = end + 4;
+                    self.request = Some(Request {
+                        method,
+                        target,
+                        version,
+                        headers,
+                        body: Vec::new(),
+                    });
+                }
+                BodyState::Fixed(len) => {
+                    if buf.len() - self.offset < len {
+                        return Ok(None);
+                    }
+                    let request = self.request.as_mut().ok_or(ParseError::MalformedChunk)?;
+                    request
+                        .body
+                        .extend_from_slice(&buf[self.offset..self.offset + len]);
+                    self.offset += len;
+                    return self.finish();
+                }
+                BodyState::Size | BodyState::Trailers => {
+                    let tail = &buf[self.offset..];
+                    let Some(end) = tail.windows(2).position(|w| w == b"\r\n") else {
+                        if self.framing_bytes + tail.len() > MAX_HEAD {
+                            return Err(ParseError::HeadersTooLarge);
+                        }
+                        return Ok(None);
+                    };
+                    self.framing_bytes += end + 2;
+                    if self.framing_bytes > MAX_HEAD {
+                        return Err(ParseError::HeadersTooLarge);
+                    }
+                    let line = std::str::from_utf8(&tail[..end])
+                        .map_err(|_| ParseError::MalformedChunk)?;
+                    self.offset += end + 2;
+                    if matches!(self.state, BodyState::Trailers) {
+                        if line.is_empty() {
+                            return self.finish();
+                        }
+                        let trailers = parse_headers(std::iter::once(line))?;
+                        // Do not merge trailers into routing, framing, auth, or representation headers.
+                        for (name, _) in trailers.iter() {
+                            if !name.to_ascii_lowercase().starts_with("x-") {
+                                return Err(ParseError::MalformedChunk);
+                            }
+                        }
+                    } else {
+                        let size = parse_chunk_size(line)?;
+                        let current = self
+                            .request
+                            .as_ref()
+                            .ok_or(ParseError::MalformedChunk)?
+                            .body
+                            .len();
+                        if size > MAX_BODY - current {
+                            return Err(ParseError::BodyTooLarge);
+                        }
+                        self.state = if size == 0 {
+                            BodyState::Trailers
+                        } else {
+                            BodyState::Data(size)
+                        };
+                    }
+                }
+                BodyState::Data(remaining) => {
+                    let available = remaining.min(buf.len() - self.offset);
+                    let request = self.request.as_mut().ok_or(ParseError::MalformedChunk)?;
+                    request
+                        .body
+                        .extend_from_slice(&buf[self.offset..self.offset + available]);
+                    self.offset += available;
+                    self.state = if available == remaining {
+                        BodyState::DataCrlf
+                    } else {
+                        BodyState::Data(remaining - available)
+                    };
+                    if available < remaining {
+                        return Ok(None);
+                    }
+                }
+                BodyState::DataCrlf => {
+                    if buf.len() - self.offset < 2 {
+                        return Ok(None);
+                    }
+                    if &buf[self.offset..self.offset + 2] != b"\r\n" {
+                        return Err(ParseError::MalformedChunk);
+                    }
+                    self.offset += 2;
+                    self.framing_bytes += 2;
+                    self.state = BodyState::Size;
+                }
             }
-            return Ok(None);
         }
+    }
+    fn finish(&mut self) -> Result<Option<(Request, usize)>, ParseError> {
+        let request = self.request.take().ok_or(ParseError::MalformedChunk)?;
+        let consumed = self.offset;
+        *self = Self::default();
+        Ok(Some((request, consumed)))
+    }
+}
+fn parse_chunk_size(line: &str) -> Result<usize, ParseError> {
+    let (digits, extensions) = line.split_once(';').map_or((line, ""), |(a, b)| (a, b));
+    let digits = if line.contains(';') {
+        digits.trim_end_matches([' ', '\t'])
+    } else {
+        digits
     };
-
-    let head_len = head_end + 4;
-
-    // Checked even when the terminator was found, so the result does not depend on read boundaries.
-    if head_len > MAX_HEAD {
-        return Err(ParseError::HeadersTooLarge);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(ParseError::MalformedChunk);
     }
-
-    // Only the head is converted to text: the body may contain arbitrary bytes.
-    let head = std::str::from_utf8(&buf[..head_end]).map_err(|_| ParseError::MalformedHeader)?;
-
-    // Strict on purpose: split on "\r\n" (not `lines()`, which also accepts a bare "\n").
-    let mut lines = head.split("\r\n");
-    let request_line = lines.next().ok_or(ParseError::MalformedRequestLine)?;
-
-    let (method, target, version) = parse_request_line(request_line)?;
-    let headers = parse_headers(lines)?;
-    validate_host(version, &headers)?;
-
-    // Transfer-Encoding is checked before Content-Length: the combination of both
-    // is the classic request smuggling setup, so it must fail with the most specific error.
-    if headers.get("Transfer-Encoding").is_some() {
-        return Err(ParseError::UnsupportedTransferEncoding);
+    if line.contains(';') {
+        validate_extensions(extensions)?;
     }
-
-    let content_length = parse_content_length(&headers)?;
-
-    // Rejected before waiting for the body, so a huge Content-Length never makes us buffer.
-    if content_length > MAX_BODY {
-        return Err(ParseError::BodyTooLarge);
+    usize::from_str_radix(digits, 16).map_err(|_| ParseError::BodyTooLarge)
+}
+fn validate_extensions(mut text: &str) -> Result<(), ParseError> {
+    loop {
+        text = text.trim_start_matches([' ', '\t']);
+        let n = text.bytes().take_while(|b| is_token_char(*b)).count();
+        if n == 0 {
+            return Err(ParseError::MalformedChunk);
+        }
+        text = text[n..].trim_start_matches([' ', '\t']);
+        if let Some(rest) = text.strip_prefix('=') {
+            text = rest.trim_start_matches([' ', '\t']);
+            if let Some(rest) = text.strip_prefix('"') {
+                let bytes = rest.as_bytes();
+                let mut i = 0;
+                loop {
+                    let Some(&b) = bytes.get(i) else {
+                        return Err(ParseError::MalformedChunk);
+                    };
+                    if b == b'"' {
+                        text = &rest[i + 1..];
+                        break;
+                    }
+                    if b == b'\\' {
+                        i += 1;
+                        let Some(&escaped) = bytes.get(i) else {
+                            return Err(ParseError::MalformedChunk);
+                        };
+                        if !(escaped == b'\t' || (0x20..=0x7e).contains(&escaped)) {
+                            return Err(ParseError::MalformedChunk);
+                        }
+                    } else if !(b == b'\t' || (0x20..=0x7e).contains(&b)) {
+                        return Err(ParseError::MalformedChunk);
+                    }
+                    i += 1;
+                }
+            } else {
+                let n = text.bytes().take_while(|b| is_token_char(*b)).count();
+                if n == 0 {
+                    return Err(ParseError::MalformedChunk);
+                }
+                text = &text[n..];
+            }
+        }
+        text = text.trim_start_matches([' ', '\t']);
+        if text.is_empty() {
+            return Ok(());
+        }
+        text = text.strip_prefix(';').ok_or(ParseError::MalformedChunk)?;
     }
-
-    let consumed = head_len
-        .checked_add(content_length)
-        .ok_or(ParseError::BodyTooLarge)?;
-
-    if buf.len() < consumed {
-        return Ok(None);
-    }
-
-    let body = buf[head_len..consumed].to_vec();
-
-    let request = Request {
-        method,
-        target,
-        version,
-        headers,
-        body,
-    };
-
-    Ok(Some((request, consumed)))
 }
 
 fn parse_request_line(line: &str) -> Result<(Method, String, Version), ParseError> {

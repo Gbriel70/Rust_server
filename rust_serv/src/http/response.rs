@@ -3,12 +3,16 @@
 use std::fmt;
 use std::io::{self, Write};
 
+pub use super::body::Body;
+use super::body::{Chunk, encode_chunk};
 use super::headers::Headers;
 
 /// HTTP statuses that the server can produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Ok,
+    PartialContent,
+    RangeNotSatisfiable,
     NoContent,
     Forbidden,
     MovedPermanently,
@@ -29,6 +33,8 @@ impl Status {
     pub fn code(self) -> u16 {
         match self {
             Self::Ok => 200,
+            Self::PartialContent => 206,
+            Self::RangeNotSatisfiable => 416,
             Self::NoContent => 204,
             Self::Forbidden => 403,
             Self::MovedPermanently => 301,
@@ -48,6 +54,8 @@ impl Status {
     pub fn reason(self) -> &'static str {
         match self {
             Self::Ok => "OK",
+            Self::PartialContent => "Partial Content",
+            Self::RangeNotSatisfiable => "Range Not Satisfiable",
             Self::NoContent => "No Content",
             Self::Forbidden => "Forbidden",
             Self::MovedPermanently => "Moved Permanently",
@@ -79,8 +87,8 @@ pub struct Response {
     pub status: Status,
     /// Additional headers sent before the body.
     pub headers: Headers,
-    /// Response body contents.
-    pub body: Vec<u8>,
+    /// Owned body source; file contents are read only by the transport.
+    pub body: Body,
 }
 
 impl Response {
@@ -89,7 +97,7 @@ impl Response {
         Self {
             status,
             headers: Headers::new(),
-            body: Vec::new(),
+            body: Body::Empty,
         }
     }
 
@@ -105,7 +113,7 @@ impl Response {
     }
 
     /// Sets the response body and allows method chaining.
-    pub fn body(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+    pub fn body(mut self, bytes: impl Into<Body>) -> Self {
         self.body = bytes.into();
         self
     }
@@ -113,8 +121,7 @@ impl Response {
     /// Serializes the response and writes it to the destination.
     ///
     /// Validation occurs before anything is written. A user-provided
-    /// `Content-Length` is ignored; the body's actual byte length is always
-    /// used to frame the response.
+    /// framing header is ignored; Body chooses Content-Length or chunked.
     pub fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.write_response(w, true)
     }
@@ -124,7 +131,9 @@ impl Response {
         self.write_response(w, false)
     }
 
-    fn write_response<W: Write>(&self, w: &mut W, include_body: bool) -> io::Result<()> {
+    /// Serializes only the head. Framing headers belong to this serializer,
+    /// never to application handlers (no Content-Length + Transfer-Encoding).
+    pub fn write_headers<W: Write>(&self, w: &mut W) -> io::Result<()> {
         for (name, value) in self.headers.iter() {
             if name
                 .bytes()
@@ -140,18 +149,52 @@ impl Response {
         let mut bytes = Vec::new();
         write!(bytes, "HTTP/1.1 {}\r\n", self.status)?;
         for (name, value) in self.headers.iter() {
-            if !name.eq_ignore_ascii_case("Content-Length") {
+            if !name.eq_ignore_ascii_case("Content-Length")
+                && !name.eq_ignore_ascii_case("Transfer-Encoding")
+            {
                 write!(bytes, "{name}: {value}\r\n")?;
             }
         }
-        let no_body = matches!(self.status, Status::NoContent | Status::NotModified);
-        if !no_body {
-            write!(bytes, "Content-Length: {}\r\n", self.body.len())?;
+        if self.allows_body() {
+            match self.body.len() {
+                Some(len) => write!(bytes, "Content-Length: {len}\r\n")?,
+                None => write!(bytes, "Transfer-Encoding: chunked\r\n")?,
+            }
         }
         write!(bytes, "\r\n")?;
-        if include_body && !no_body {
-            bytes.extend_from_slice(&self.body);
-        }
         w.write_all(&bytes)
+    }
+    pub fn allows_body(&self) -> bool {
+        !matches!(self.status, Status::NoContent | Status::NotModified)
+    }
+    pub fn is_chunked(&self) -> bool {
+        self.allows_body() && self.body.len().is_none()
+    }
+    fn write_response<W: Write>(&self, w: &mut W, include_body: bool) -> io::Result<()> {
+        self.write_headers(w)?;
+        if !include_body || !self.allows_body() {
+            return Ok(());
+        }
+        let mut cursor = self.body.cursor()?;
+        loop {
+            match cursor.next_chunk()? {
+                Chunk::Data(bytes) => {
+                    if self.is_chunked() {
+                        w.write_all(&encode_chunk(&bytes))?;
+                    } else {
+                        w.write_all(&bytes)?;
+                    }
+                }
+                Chunk::Pending(ready) => {
+                    std::thread::sleep(ready.saturating_duration_since(std::time::Instant::now()))
+                }
+                Chunk::Done => {
+                    if self.is_chunked() {
+                        w.write_all(b"0\r\n\r\n")?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
     }
 }

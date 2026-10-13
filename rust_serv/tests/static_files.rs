@@ -69,7 +69,14 @@ impl Fixture {
         StaticFiles::new(self.root()).unwrap()
     }
     fn serve(&self, target: &str) -> Response {
-        self.files().serve(&request(Method::Get, target))
+        {
+            let mut response = self.files().serve(&request(Method::Get, target));
+            let mut wire = Vec::new();
+            response.write_to(&mut wire).unwrap();
+            let end = wire.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            response.body = wire[end..].to_vec().into();
+            response
+        }
     }
 }
 impl Drop for Fixture {
@@ -111,7 +118,13 @@ fn traversal_table() {
     ] {
         let r = f.serve(path);
         assert_eq!(r.status, status, "{path}");
-        assert!(!r.body.windows(10).any(|w| w == b"TOP SECRET"));
+        assert!(
+            !r.body
+                .as_bytes()
+                .unwrap()
+                .windows(10)
+                .any(|w| w == b"TOP SECRET")
+        );
         assert_eq!(r.headers.get("Location"), None);
     }
 }
@@ -226,7 +239,9 @@ fn binaries_limits_and_empty() {
     assert_eq!(f.serve("/large.bin").body, large);
     let file = fs::File::create(f.root().join("oversize")).unwrap();
     file.set_len(128 * 1024 * 1024 + 1).unwrap();
-    assert_eq!(f.serve("/oversize").status, Status::InternalServerError);
+    let response = f.files().serve(&request(Method::Get, "/oversize"));
+    assert_eq!(response.status, Status::Ok);
+    assert_eq!(response.body.len(), Some(128 * 1024 * 1024 + 1));
     let mut wire = vec![];
     f.serve("/empty.txt").write_to(&mut wire).unwrap();
     assert!(

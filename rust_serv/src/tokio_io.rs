@@ -1,11 +1,12 @@
-//! Async transport adapter. HTTP parser/router/response stay sans-I/O.
+//! Async transport adapter. Parsing and routing remain independent of the runtime.
 use crate::{
     connection::Config,
     error::Error,
     http::{
-        parser::parse_request,
+        body::{BLOCK_SIZE, encode_chunk},
+        parser::RequestParser,
         request::{Method, Request, Version},
-        response::{Response, Status},
+        response::{Body, Response, Status},
     },
     router::Router,
     server::{ShutdownHandle, status_for},
@@ -19,7 +20,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::Semaphore,
     task::JoinSet,
@@ -28,6 +29,7 @@ use tokio::{
 use tracing::Instrument;
 
 struct Connection {
+    parser: RequestParser,
     stream: TcpStream,
     input: BytesMut,
     config: Config,
@@ -39,6 +41,7 @@ impl Connection {
     fn new(stream: TcpStream, config: Config) -> Self {
         let now = Instant::now();
         Self {
+            parser: RequestParser::default(),
             stream,
             input: BytesMut::with_capacity(1024),
             config,
@@ -80,7 +83,7 @@ impl Connection {
     /// live in self, and read_buf does not consume bytes when its branch loses.
     async fn read_request(&mut self) -> Result<Option<Request>, Error> {
         loop {
-            if let Some((request, consumed)) = parse_request(&self.input)? {
+            if let Some((request, consumed)) = self.parser.parse(&self.input)? {
                 self.input.advance(consumed);
                 self.request_started = if self.input.is_empty() {
                     None
@@ -118,19 +121,78 @@ impl Connection {
             self.last_read = now;
         }
     }
-    async fn write_response(&mut self, response: &Response, head: bool) -> io::Result<()> {
-        let mut bytes = Vec::new();
-        if head {
-            response.write_head_to(&mut bytes)?;
-        } else {
-            response.write_to(&mut bytes)?;
+    async fn write_response(
+        &mut self,
+        response: Response,
+        head: bool,
+        shutdown: &ShutdownHandle,
+    ) -> io::Result<()> {
+        let mut headers = Vec::new();
+        response.write_headers(&mut headers)?;
+        self.write_block(&headers).await?;
+        if !head && response.allows_body() {
+            match response.body {
+                Body::Empty => {}
+                Body::Bytes(bytes) => {
+                    for chunk in bytes.chunks(BLOCK_SIZE) {
+                        self.write_block(chunk).await?;
+                    }
+                }
+                Body::File { file, len, offset } => {
+                    let mut file = tokio::fs::File::from_std(file);
+                    file.set_max_buf_size(BLOCK_SIZE);
+                    file.seek(io::SeekFrom::Start(offset)).await?;
+                    self.copy_reader(&mut file.take(len), len).await?;
+                }
+                Body::Stream { interval, events } => {
+                    for event in 1..=events {
+                        if event > 1 {
+                            tokio::select! {
+                                _=shutdown.notified()=>break,
+                                _=tokio::time::sleep(interval)=>{},
+                            }
+                        }
+                        if shutdown.is_requested() {
+                            break;
+                        }
+                        self.write_block(&encode_chunk(
+                            format!("id: {event}\ndata: event {event}\n\n").as_bytes(),
+                        ))
+                        .await?;
+                    }
+                    self.write_block(b"0\r\n\r\n").await?;
+                }
+            }
         }
-        // write_all is not cancellation-safe for reuse. On timeout the caller
-        // closes this socket; it never starts another response on the same stream.
-        timeout(self.config.write_timeout, self.stream.write_all(&bytes))
+        self.idle_since = Instant::now();
+        Ok(())
+    }
+    /// One read followed by one awaited write: no producer can outrun TCP.
+    async fn copy_reader<R: AsyncRead + Unpin>(
+        &mut self,
+        reader: &mut R,
+        mut remaining: u64,
+    ) -> io::Result<()> {
+        let mut buffer = vec![0; BLOCK_SIZE];
+        while remaining > 0 {
+            let limit = remaining.min(buffer.len() as u64) as usize;
+            let n = reader.read(&mut buffer[..limit]).await?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "file shrank during transfer",
+                ));
+            }
+            self.write_block(&buffer[..n]).await?;
+            remaining -= n as u64;
+        }
+        Ok(())
+    }
+    async fn write_block(&mut self, bytes: &[u8]) -> io::Result<()> {
+        // A timed-out write_all cannot be resumed safely. Close this socket.
+        timeout(self.config.write_timeout, self.stream.write_all(bytes))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "response write timeout"))??;
-        self.idle_since = Instant::now();
         Ok(())
     }
     async fn linger_close(&mut self) {
@@ -312,12 +374,18 @@ async fn handle_connection(
             ),
             Err(error) => return Err(error),
         };
+        if version == Version::Http10 && response.is_chunked() {
+            response = Response::text(
+                Status::HttpVersionNotSupported,
+                "streaming requires HTTP/1.1",
+            );
+        }
         if !keep_alive {
             response = response.header("Connection", "close");
         } else if version == Version::Http10 {
             response = response.header("Connection", "keep-alive");
         }
-        let written = connection.write_response(&response, head).await;
+        let written = connection.write_response(response, head, shutdown).await;
         if written.is_ok() {
             stats.responses.fetch_add(1, Ordering::Relaxed);
         }

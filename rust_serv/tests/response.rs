@@ -91,6 +91,8 @@ mod tests {
     fn statuses() {
         for (status, code, reason) in [
             (Status::Ok, 200, "OK"),
+            (Status::PartialContent, 206, "Partial Content"),
+            (Status::RangeNotSatisfiable, 416, "Range Not Satisfiable"),
             (Status::BadRequest, 400, "Bad Request"),
             (Status::NotFound, 404, "Not Found"),
             (Status::MethodNotAllowed, 405, "Method Not Allowed"),

@@ -1,1 +1,39 @@
-<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Fase 6</title><link rel="stylesheet" href="style.css"><h1>Arquivos estáticos</h1><img src="logo.png" alt="PNG"><img src="icon.svg" alt="SVG"><p id="status">Carregando JavaScript</p><a href="docs">Documentação</a><script src="app.js"></script></html>
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Fase 11 — Streaming e busca no vídeo</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main>
+      <h1>Streaming de vídeo</h1>
+      <p>Este vídeo é enviado em blocos pelo servidor. Aperte play para assistir.</p>
+      <video controls playsinline preload="metadata" aria-label="Vídeo de demonstração de streaming">
+        <source src="/Download.mp4" type="video/mp4">
+        Seu navegador não suporta este vídeo.
+        <a href="/Download.mp4">Abra o arquivo de vídeo</a>.
+      </video>
+      <p><a href="/Download.mp4">Abrir o vídeo diretamente</a></p>
+      <section aria-labelledby="network-title">
+        <h2 id="network-title">Observe a busca por trechos</h2>
+        <ol>
+          <li>Abra DevTools → Network (Rede), marque Disable cache e escolha uma rede lenta.</li>
+          <li>Recarregue, dê play e avance para uma parte ainda não baixada.</li>
+          <li>Procure as respostas 206 de Download.mp4 e confira Range e Content-Range.</li>
+        </ol>
+        <p>O navegador pode buscar só os bytes necessários ao trecho escolhido,
+          sem baixar primeiro tudo que vem antes.</p>
+      </section>
+      <section aria-labelledby="static-title">
+        <h2 id="static-title">Arquivos estáticos</h2>
+        <img src="/logo.png" alt="Imagem PNG de teste">
+        <img src="/icon.svg" alt="Imagem SVG de teste">
+        <p id="status">Carregando JavaScript</p>
+        <a href="/docs">Documentação</a>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

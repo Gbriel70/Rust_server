@@ -1,1 +1,29 @@
-body { font-family: sans-serif; max-width: 45rem; margin: 3rem auto; background: #eef4ff; color: #182848; } img { width: 64px; }
+body {
+  font-family: sans-serif;
+  max-width: 55rem;
+  margin: 3rem auto;
+  padding: 0 1rem;
+  background: #eef4ff;
+  color: #182848;
+  line-height: 1.6;
+}
+
+video {
+  display: block;
+  width: 100%;
+  max-height: 70vh;
+  background: #111;
+  border-radius: 0.5rem;
+}
+
+section {
+  margin-top: 2rem;
+}
+
+img {
+  width: 64px;
+}
+
+a {
+  color: #174eaa;
+}

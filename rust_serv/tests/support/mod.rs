@@ -134,6 +134,32 @@ impl ResponseReader {
             .split_whitespace()
             .nth(1)
             .is_some_and(|s| s.starts_with('1'));
+        let chunked = response.optional_header("Transfer-Encoding") == Some("chunked");
+        assert!(!(chunked && response.optional_header("Content-Length").is_some()));
+        if chunked && !head_only && !no_body {
+            self.buf.drain(..end + 4);
+            loop {
+                let end = loop {
+                    if let Some(end) = self.buf.windows(2).position(|w| w == b"\r\n") {
+                        break end;
+                    }
+                    self.read_more();
+                };
+                let length =
+                    usize::from_str_radix(std::str::from_utf8(&self.buf[..end]).unwrap(), 16)
+                        .unwrap();
+                self.buf.drain(..end + 2);
+                while self.buf.len() < length + 2 {
+                    self.read_more();
+                }
+                assert_eq!(&self.buf[length..length + 2], b"\r\n");
+                response.body.extend_from_slice(&self.buf[..length]);
+                self.buf.drain(..length + 2);
+                if length == 0 {
+                    return response;
+                }
+            }
+        }
         let length = response
             .optional_header("Content-Length")
             .map_or(0, |s| s.parse::<usize>().unwrap());
@@ -143,7 +169,7 @@ impl ResponseReader {
                 .iter()
                 .filter(|(name, _)| name.eq_ignore_ascii_case("Content-Length"))
                 .count(),
-            usize::from(!no_body)
+            usize::from(!no_body && !chunked)
         );
         let body_length = if head_only || no_body { 0 } else { length };
         let consumed = end + 4 + body_length;

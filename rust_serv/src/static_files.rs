@@ -2,16 +2,16 @@
 //! canonicalize followed by open still has a TOCTOU window (openat2 can close it).
 use crate::http::{
     date::{format_http_date, parse_http_date},
+    range::{ByteRange, RangeError},
     request::{Method, Request},
-    response::{Response, Status},
+    response::{Body, Response, Status},
     uri::decode_path,
 };
 use std::{
     fs::{self, File},
-    io::{self, Read},
+    io::{self},
     path::{Path, PathBuf},
 };
-const MAX_SIZE: u64 = 128 * 1024 * 1024;
 pub struct StaticFiles {
     root: PathBuf,
 }
@@ -90,11 +90,19 @@ impl StaticFiles {
         if !metadata.is_file() {
             return Err(Status::Forbidden);
         }
-        if metadata.len() > MAX_SIZE {
-            return Err(Status::InternalServerError);
-        }
         let modified = metadata.modified().map_err(io_status)?;
         let last_modified = format_http_date(modified);
+        let total = metadata.len();
+        // Educational validator: trusts local writers to change mtime on edits.
+        // Nanoseconds avoid collisions caused by HTTP-date's whole seconds.
+        let stamp = match modified.duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => format!("p{:x}-{:x}", d.as_secs(), d.subsec_nanos()),
+            Err(e) => {
+                let d = e.duration();
+                format!("n{:x}-{:x}", d.as_secs(), d.subsec_nanos())
+            }
+        };
+        let etag = format!("\"{stamp}-{total:x}\"");
         // The formatted validator represents the mtime truncated to whole seconds.
         let unmodified = request
             .headers
@@ -109,19 +117,48 @@ impl StaticFiles {
         })
         .header("Content-Type", mime_for(&path))
         .header("Last-Modified", last_modified)
-        .header("Cache-Control", "no-cache");
+        .header("Cache-Control", "no-cache")
+        .header("Accept-Ranges", "bytes")
+        .header("ETag", etag.clone());
         if unmodified {
             return Ok(response);
         }
-        // HEAD intentionally reads too; Phase 10 introduces a declared body length.
-        let mut body = Vec::new();
-        file.take(MAX_SIZE + 1)
-            .read_to_end(&mut body)
-            .map_err(io_status)?;
-        if body.len() as u64 > MAX_SIZE {
-            return Err(Status::InternalServerError);
+        let mut response = response;
+        let mut offset = 0;
+        let mut len = total;
+        // Range only applies to GET; HEAD describes the complete representation.
+        let ranges: Vec<_> = request
+            .headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("Range"))
+            .collect();
+        let validators: Vec<_> = request
+            .headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("If-Range"))
+            .collect();
+        let validator_matches =
+            validators.is_empty() || (validators.len() == 1 && validators[0].1 == etag);
+        if request.method == Method::Get && ranges.len() == 1 && validator_matches {
+            match ranges[0].1.parse::<ByteRange>() {
+                Err(RangeError::Unsupported) => {} // Ignore unknown units / multipart ranges.
+                parsed => {
+                    let resolved = parsed.ok().and_then(|range| range.resolve(total));
+                    let Some(range) = resolved else {
+                        response.status = Status::RangeNotSatisfiable;
+                        return Ok(response.header("Content-Range", format!("bytes */{total}")));
+                    };
+                    response.status = Status::PartialContent;
+                    response = response.header(
+                        "Content-Range",
+                        format!("bytes {}-{}/{total}", range.start, range.end),
+                    );
+                    offset = range.start;
+                    len = range.len;
+                }
+            }
         }
-        Ok(response.body(body))
+        Ok(response.body(Body::File { file, len, offset }))
     }
 }
 
