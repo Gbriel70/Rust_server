@@ -123,9 +123,8 @@ impl Connection {
             match &mut self.state {
                 ConnectionState::Reading => {
                     // Parse first: a pipelined request may already be in user memory.
-                    match self.parser.parse(&self.input) {
+                    match self.parser.parse_borrowed(&self.input) {
                         Ok(Some((request, consumed))) => {
-                            self.input.drain(..consumed);
                             self.request_started = if self.input.is_empty() {
                                 None
                             } else {
@@ -134,7 +133,7 @@ impl Connection {
                             self.handled += 1;
                             stats.requests.fetch_add(1, Ordering::Relaxed);
                             let response = match catch_unwind(AssertUnwindSafe(|| {
-                                router.handle(&request)
+                                router.handle_borrowed(&request)
                             })) {
                                 Ok(response) => response,
                                 Err(_) => {
@@ -144,7 +143,7 @@ impl Connection {
                             };
                             let close = !request.keep_alive()
                                 || self.handled >= config.max_requests
-                                || (shutdown && self.input.is_empty())
+                                || (shutdown && self.input.len() == consumed)
                                 || matches!(
                                     response.status,
                                     Status::BadRequest
@@ -152,12 +151,15 @@ impl Connection {
                                         | Status::PayloadTooLarge
                                         | Status::RequestHeaderFieldsTooLarge
                                 );
-                            self.respond(
-                                response,
-                                request.method == Method::Head,
-                                close,
-                                request.version,
-                            )?;
+                            let head = request.method == Method::Head;
+                            let version = request.version;
+                            self.input.drain(..consumed);
+                            self.request_started = if self.input.is_empty() {
+                                None
+                            } else {
+                                Some(self.last_read)
+                            };
+                            self.respond(response, head, close, version)?;
                             continue;
                         }
                         Err(error) => {

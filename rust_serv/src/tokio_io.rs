@@ -4,15 +4,15 @@ use crate::{
     error::Error,
     http::{
         body::{BLOCK_SIZE, encode_chunk},
-        parser::RequestParser,
-        request::{Method, Request, Version},
+        parser::{RequestFrame, RequestParser},
+        request::{Method, Version},
         response::{Body, Response, Status},
     },
     router::Router,
     server::{ShutdownHandle, status_for},
     stats::{Stats, Ticket},
 };
-use bytes::{Buf, BytesMut};
+use bytes::BytesMut;
 use std::{
     io,
     net::TcpListener as StdListener,
@@ -81,16 +81,17 @@ impl Connection {
     }
     /// Cancellation-safe under shutdown select: BytesMut and absolute deadline
     /// live in self, and read_buf does not consume bytes when its branch loses.
-    async fn read_request(&mut self) -> Result<Option<Request>, Error> {
+    async fn read_request(&mut self) -> Result<Option<RequestFrame>, Error> {
         loop {
-            if let Some((request, consumed)) = self.parser.parse(&self.input)? {
-                self.input.advance(consumed);
+            if let Some(plan) = self.parser.parse_indices(&self.input)? {
+                let wire = self.input.split_to(plan.consumed()).freeze();
+                let frame = plan.freeze(wire)?;
                 self.request_started = if self.input.is_empty() {
                     None
                 } else {
                     Some(self.last_read)
                 };
-                return Ok(Some(request));
+                return Ok(Some(frame));
             }
             let (deadline, expired) = match self.request_started {
                 Some(start) => (start + self.config.request_timeout, Error::RequestTimeout),
@@ -324,7 +325,8 @@ async fn handle_connection(
             },
         };
         let (mut response, head, keep_alive, version) = match read {
-            Ok(Some(request)) => {
+            Ok(Some(frame)) => {
+                let request = frame.request()?;
                 stats.requests.fetch_add(1, Ordering::Relaxed);
                 let head = request.method == Method::Head;
                 let version = request.version;
@@ -332,11 +334,15 @@ async fn handle_connection(
                 let handler_router = Arc::clone(&router);
                 let span = tracing::Span::current();
                 let response = match tokio::task::spawn_blocking(move || {
-                    span.in_scope(|| handler_router.handle(&request))
+                    span.in_scope(|| {
+                        frame
+                            .request()
+                            .map(|request| handler_router.handle_borrowed(&request))
+                    })
                 })
                 .await
                 {
-                    Ok(response) => response,
+                    Ok(response) => response?,
                     Err(error) => {
                         if error.is_panic() {
                             stats.panics.fetch_add(1, Ordering::Relaxed);

@@ -13,6 +13,10 @@ impl Headers {
         Self(Vec::new())
     }
 
+    pub(crate) fn raw(&self) -> &[(String, String)] {
+        &self.0
+    }
+
     /// Returns the first value whose name matches case-insensitively.
     pub fn get(&self, name: &str) -> Option<&str> {
         self.0

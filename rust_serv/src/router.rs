@@ -2,11 +2,23 @@
 
 use std::collections::HashMap;
 
+use crate::http::borrowed_request::Request as BorrowedRequest;
 use crate::http::request::{Method, Request};
 use crate::http::response::{Response, Status};
 use crate::http::uri::decode_path;
 
-type Handler = Box<dyn Fn(&Request) -> Response + Send + Sync>;
+enum Handler {
+    Owned(Box<dyn Fn(&Request) -> Response + Send + Sync>),
+    Borrowed(Box<dyn Fn(&BorrowedRequest<'_>) -> Response + Send + Sync>),
+}
+impl Handler {
+    fn call(&self, request: &BorrowedRequest<'_>) -> Response {
+        match self {
+            Self::Owned(handler) => handler(&request.to_owned_request()),
+            Self::Borrowed(handler) => handler(request),
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct Router {
@@ -35,7 +47,7 @@ impl Router {
         self.routes
             .entry(path.to_owned())
             .or_default()
-            .insert(method, Box::new(handler));
+            .insert(method, Handler::Owned(Box::new(handler)));
         self
     }
 
@@ -44,11 +56,38 @@ impl Router {
         mut self,
         handler: impl Fn(&Request) -> Response + Send + Sync + 'static,
     ) -> Self {
-        self.fallback = Some(Box::new(handler));
+        self.fallback = Some(Handler::Owned(Box::new(handler)));
         self
     }
 
+    pub fn route_borrowed(
+        mut self,
+        method: Method,
+        path: &str,
+        handler: impl Fn(&BorrowedRequest<'_>) -> Response + Send + Sync + 'static,
+    ) -> Self {
+        assert_ne!(
+            method,
+            Method::Head,
+            "register GET to provide HEAD automatically"
+        );
+        self.routes
+            .entry(path.to_owned())
+            .or_default()
+            .insert(method, Handler::Borrowed(Box::new(handler)));
+        self
+    }
+    pub fn fallback_borrowed(
+        mut self,
+        handler: impl Fn(&BorrowedRequest<'_>) -> Response + Send + Sync + 'static,
+    ) -> Self {
+        self.fallback = Some(Handler::Borrowed(Box::new(handler)));
+        self
+    }
     pub fn handle(&self, request: &Request) -> Response {
+        self.handle_borrowed(&BorrowedRequest::from(request))
+    }
+    pub fn handle_borrowed(&self, request: &BorrowedRequest<'_>) -> Response {
         let path = match decode_path(request.path()) {
             Ok(path) => path,
             Err(error) => return Response::text(Status::BadRequest, &error.to_string()),
@@ -56,7 +95,7 @@ impl Router {
         let Some(methods) = self.routes.get(&path) else {
             return self.fallback.as_ref().map_or_else(
                 || Response::text(Status::NotFound, "not found\n"),
-                |handler| handler(request),
+                |handler| handler.call(request),
             );
         };
         // HEAD is derived from GET; the server suppresses the body on the wire.
@@ -66,7 +105,7 @@ impl Router {
             request.method
         };
         if let Some(handler) = methods.get(&method) {
-            return handler(request);
+            return handler.call(request);
         }
         let mut allowed: Vec<_> = methods.keys().map(|method| method.as_str()).collect();
         if methods.contains_key(&Method::Get) {

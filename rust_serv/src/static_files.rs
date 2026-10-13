@@ -1,6 +1,7 @@
 //! Static files beneath a canonical root. Local filesystem writers must be trusted:
 //! canonicalize followed by open still has a TOCTOU window (openat2 can close it).
 use crate::http::{
+    borrowed_request::Request as BorrowedRequest,
     date::{format_http_date, parse_http_date},
     range::{ByteRange, RangeError},
     request::{Method, Request},
@@ -59,11 +60,14 @@ impl StaticFiles {
         Ok(path)
     }
     pub fn serve(&self, request: &Request) -> Response {
+        self.serve_borrowed(&BorrowedRequest::from(request))
+    }
+    pub fn serve_borrowed(&self, request: &BorrowedRequest<'_>) -> Response {
         self.serve_inner(request)
             .unwrap_or_else(|status| Response::text(status, status.reason()))
             .header("X-Content-Type-Options", "nosniff")
     }
-    fn serve_inner(&self, request: &Request) -> Result<Response, Status> {
+    fn serve_inner(&self, request: &BorrowedRequest<'_>) -> Result<Response, Status> {
         if !matches!(request.method, Method::Get | Method::Head) {
             return Ok(Response::new(Status::MethodNotAllowed).header("Allow", "GET, HEAD"));
         }

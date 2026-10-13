@@ -1,8 +1,11 @@
 //! Incremental parser for HTTP requests received as bytes.
 
-use std::str::FromStr;
+use super::borrowed_request::{
+    HeaderIndex, Headers as BorrowedHeaders, Request as BorrowedRequest,
+};
+use bytes::Bytes;
+use std::{borrow::Cow, ops::Range, str::FromStr};
 
-use crate::http::headers::Headers;
 use crate::http::request::{Method, Request, Version};
 
 /// Maximum size of the request head (request line + headers + final CRLF CRLF).
@@ -82,13 +85,32 @@ enum BodyState {
 /// until completion; pipelined bytes after `consumed` belong to the next request.
 #[derive(Debug, Default)]
 pub struct RequestParser {
-    request: Option<Request>,
+    request: Option<ParsedRequest>,
     offset: usize,
     framing_bytes: usize,
     state: BodyState,
 }
 impl RequestParser {
     pub fn parse(&mut self, buf: &[u8]) -> Result<Option<(Request, usize)>, ParseError> {
+        self.parse_borrowed(buf)
+            .map(|result| result.map(|(request, n)| (request.into_owned_request(), n)))
+    }
+    pub fn parse_borrowed<'a>(
+        &mut self,
+        buf: &'a [u8],
+    ) -> Result<Option<(BorrowedRequest<'a>, usize)>, ParseError> {
+        self.parse_indices(buf)?
+            .map(|plan| {
+                let n = plan.consumed;
+                Ok((plan.into_request(buf)?, n))
+            })
+            .transpose()
+    }
+    pub fn parse_indices(&mut self, buf: &[u8]) -> Result<Option<ParsedRequest>, ParseError> {
+        // An inconsistent incremental caller cannot make slicing/subtraction panic.
+        if buf.len() < self.offset {
+            return Err(ParseError::MalformedChunk);
+        }
         loop {
             match self.state {
                 BodyState::Head => {
@@ -107,21 +129,23 @@ impl RequestParser {
                     let mut lines = head.split("\r\n");
                     let (method, target, version) =
                         parse_request_line(lines.next().ok_or(ParseError::MalformedRequestLine)?)?;
-                    let headers = parse_headers(lines)?;
+                    let fields = parse_header_indices(head, lines)?;
+                    let headers = BorrowedHeaders::indexed(head, Cow::Borrowed(&fields));
                     validate_host(version, &headers)?;
-                    let encodings: Vec<_> = headers
+                    let mut encodings = headers
                         .iter()
                         .filter(|(n, _)| n.eq_ignore_ascii_case("Transfer-Encoding"))
-                        .map(|(_, v)| v)
-                        .collect();
-                    if !encodings.is_empty() && headers.get("Content-Length").is_some() {
+                        .map(|(_, v)| v);
+                    let encoding = encodings.next();
+                    let repeated_encoding = encodings.next().is_some();
+                    if encoding.is_some() && headers.get("Content-Length").is_some() {
                         return Err(ParseError::AmbiguousFraming);
                     }
-                    self.state = if !encodings.is_empty() {
-                        if version == Version::Http10 || encodings.len() != 1 {
+                    self.state = if encoding.is_some() {
+                        if version == Version::Http10 || repeated_encoding {
                             return Err(ParseError::AmbiguousFraming);
                         }
-                        if !encodings[0].eq_ignore_ascii_case("chunked") {
+                        if !encoding.is_some_and(|value| value.eq_ignore_ascii_case("chunked")) {
                             return Err(ParseError::UnsupportedTransferEncoding);
                         }
                         BodyState::Size
@@ -133,12 +157,15 @@ impl RequestParser {
                         BodyState::Fixed(len)
                     };
                     self.offset = end + 4;
-                    self.request = Some(Request {
+                    self.request = Some(ParsedRequest {
                         method,
-                        target,
+                        target: string_range(head, target),
                         version,
-                        headers,
+                        fields,
+                        head_len: end,
                         body: Vec::new(),
+                        fixed_body: None,
+                        consumed: 0,
                     });
                 }
                 BodyState::Fixed(len) => {
@@ -146,9 +173,7 @@ impl RequestParser {
                         return Ok(None);
                     }
                     let request = self.request.as_mut().ok_or(ParseError::MalformedChunk)?;
-                    request
-                        .body
-                        .extend_from_slice(&buf[self.offset..self.offset + len]);
+                    request.fixed_body = Some(self.offset..self.offset + len);
                     self.offset += len;
                     return self.finish();
                 }
@@ -171,10 +196,15 @@ impl RequestParser {
                         if line.is_empty() {
                             return self.finish();
                         }
-                        let trailers = parse_headers(std::iter::once(line))?;
+                        let trailer_fields = parse_header_indices(line, std::iter::once(line))?;
+                        let trailers =
+                            BorrowedHeaders::indexed(line, Cow::Borrowed(&trailer_fields));
                         // Do not merge trailers into routing, framing, auth, or representation headers.
                         for (name, _) in trailers.iter() {
-                            if !name.to_ascii_lowercase().starts_with("x-") {
+                            if !name
+                                .get(..2)
+                                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("x-"))
+                            {
                                 return Err(ParseError::MalformedChunk);
                             }
                         }
@@ -226,11 +256,12 @@ impl RequestParser {
             }
         }
     }
-    fn finish(&mut self) -> Result<Option<(Request, usize)>, ParseError> {
-        let request = self.request.take().ok_or(ParseError::MalformedChunk)?;
+    fn finish(&mut self) -> Result<Option<ParsedRequest>, ParseError> {
+        let mut request = self.request.take().ok_or(ParseError::MalformedChunk)?;
         let consumed = self.offset;
         *self = Self::default();
-        Ok(Some((request, consumed)))
+        request.consumed = consumed;
+        Ok(Some(request))
     }
 }
 fn parse_chunk_size(line: &str) -> Result<usize, ParseError> {
@@ -298,7 +329,7 @@ fn validate_extensions(mut text: &str) -> Result<(), ParseError> {
     }
 }
 
-fn parse_request_line(line: &str) -> Result<(Method, String, Version), ParseError> {
+fn parse_request_line(line: &str) -> Result<(Method, &str, Version), ParseError> {
     let mut parts = line.split(' ');
 
     // Exactly three parts separated by a single space.
@@ -317,7 +348,7 @@ fn parse_request_line(line: &str) -> Result<(Method, String, Version), ParseErro
 
     let version = Version::from_str(version_str).map_err(|_| ParseError::UnsupportedVersion)?;
 
-    Ok((method, target.to_string(), version))
+    Ok((method, target, version))
 }
 
 /// Origin-form ("/path?query") for every method, plus asterisk-form ("*") for OPTIONS.
@@ -330,26 +361,28 @@ fn is_valid_target(target: &str, method: Method) -> bool {
     (origin_form || asterisk_form) && target.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
-fn parse_headers<'a>(lines: impl Iterator<Item = &'a str>) -> Result<Headers, ParseError> {
-    let mut headers = Headers::new();
-
+fn string_range(head: &str, value: &str) -> Range<usize> {
+    let start = value.as_ptr() as usize - head.as_ptr() as usize;
+    start..start + value.len()
+}
+fn parse_header_indices<'a>(
+    head: &'a str,
+    lines: impl Iterator<Item = &'a str>,
+) -> Result<Vec<HeaderIndex>, ParseError> {
+    let mut fields = Vec::new();
     for line in lines {
-        // Obsolete line folding is not supported (and is a known smuggling vector).
         if line.starts_with(' ') || line.starts_with('\t') {
             return Err(ParseError::MalformedHeader);
         }
-
         let (name, value) = line.split_once(':').ok_or(ParseError::MalformedHeader)?;
-
         validate_header_name(name)?;
         validate_header_value(value)?;
-
-        let value = value.trim_matches([' ', '\t']);
-
-        headers.push(name.to_string(), value.to_string());
+        fields.push(HeaderIndex {
+            name: string_range(head, name),
+            value: string_range(head, value.trim_matches([' ', '\t'])),
+        });
     }
-
-    Ok(headers)
+    Ok(fields)
 }
 
 /// A header name is a non-empty token. This also rejects "Host : x" (space before the colon).
@@ -397,7 +430,7 @@ fn validate_header_value(value: &str) -> Result<(), ParseError> {
 }
 
 /// HTTP/1.1 requires exactly one Host header; HTTP/1.0 does not.
-fn validate_host(version: Version, headers: &Headers) -> Result<(), ParseError> {
+fn validate_host(version: Version, headers: &BorrowedHeaders<'_>) -> Result<(), ParseError> {
     let host_count = headers
         .iter()
         .filter(|(name, _)| name.eq_ignore_ascii_case("Host"))
@@ -416,11 +449,11 @@ fn validate_host(version: Version, headers: &Headers) -> Result<(), ParseError> 
     Ok(())
 }
 
-fn parse_content_length(headers: &Headers) -> Result<usize, ParseError> {
+fn parse_content_length(headers: &BorrowedHeaders<'_>) -> Result<usize, ParseError> {
     let mut values = headers
         .iter()
         .filter(|(name, _)| name.eq_ignore_ascii_case("Content-Length"))
-        .map(|(_, value)| value.as_str());
+        .map(|(_, value)| value);
 
     let Some(value) = values.next() else {
         return Ok(0);
@@ -439,4 +472,92 @@ fn parse_content_length(headers: &Headers) -> Result<usize, ParseError> {
     // At this point the value is only digits, so the only possible failure is overflow:
     // the number is too large to be a valid body size.
     value.parse::<usize>().map_err(|_| ParseError::BodyTooLarge)
+}
+
+/// No self-reference: this plan stores offsets, never pointers into its input.
+#[derive(Debug)]
+pub struct ParsedRequest {
+    method: Method,
+    target: Range<usize>,
+    version: Version,
+    fields: Vec<HeaderIndex>,
+    head_len: usize,
+    body: Vec<u8>,
+    fixed_body: Option<Range<usize>>,
+    consumed: usize,
+}
+impl ParsedRequest {
+    pub fn consumed(&self) -> usize {
+        self.consumed
+    }
+    /// Use the same unchanged prefix that produced this plan.
+    /// Bounds and UTF-8 checks protect against incorrect API usage.
+    pub fn request<'a>(&'a self, buf: &'a [u8]) -> Result<BorrowedRequest<'a>, ParseError> {
+        let head = self.head(buf)?;
+        let target = head
+            .get(self.target.clone())
+            .ok_or(ParseError::MalformedRequestLine)?;
+        let body = match &self.fixed_body {
+            Some(range) => buf.get(range.clone()).ok_or(ParseError::MalformedChunk)?,
+            None => &self.body,
+        };
+        Ok(BorrowedRequest {
+            method: self.method,
+            target: Cow::Borrowed(target),
+            version: self.version,
+            headers: BorrowedHeaders::indexed(head, Cow::Borrowed(&self.fields)),
+            body: Cow::Borrowed(body),
+        })
+    }
+    fn head<'a>(&self, buf: &'a [u8]) -> Result<&'a str, ParseError> {
+        let head = std::str::from_utf8(
+            buf.get(..self.head_len)
+                .ok_or(ParseError::MalformedHeader)?,
+        )
+        .map_err(|_| ParseError::MalformedHeader)?;
+        for field in &self.fields {
+            if head.get(field.name.clone()).is_none() || head.get(field.value.clone()).is_none() {
+                return Err(ParseError::MalformedHeader);
+            }
+        }
+        Ok(head)
+    }
+    fn into_request(self, buf: &[u8]) -> Result<BorrowedRequest<'_>, ParseError> {
+        let head = self.head(buf)?;
+        let target = head
+            .get(self.target.clone())
+            .ok_or(ParseError::MalformedRequestLine)?;
+        let body = match self.fixed_body {
+            Some(range) => Cow::Borrowed(buf.get(range).ok_or(ParseError::MalformedChunk)?),
+            None => Cow::Owned(self.body),
+        };
+        Ok(BorrowedRequest {
+            method: self.method,
+            target: Cow::Borrowed(target),
+            version: self.version,
+            headers: BorrowedHeaders::indexed(head, Cow::Owned(self.fields)),
+            body,
+        })
+    }
+    pub fn freeze(self, wire: Bytes) -> Result<RequestFrame, ParseError> {
+        if self.consumed != wire.len() {
+            return Err(ParseError::MalformedChunk);
+        }
+        self.request(&wire)?;
+        Ok(RequestFrame { wire, plan: self })
+    }
+}
+/// Bytes + indices can safely move into a 'static task. Views are made on demand.
+#[derive(Debug)]
+pub struct RequestFrame {
+    wire: Bytes,
+    plan: ParsedRequest,
+}
+impl RequestFrame {
+    pub fn request(&self) -> Result<BorrowedRequest<'_>, ParseError> {
+        self.plan.request(&self.wire)
+    }
+}
+pub fn parse_borrowed(buf: &[u8]) -> Result<Option<(BorrowedRequest<'_>, usize)>, ParseError> {
+    RequestParser::default().parse_borrowed(buf)
 }

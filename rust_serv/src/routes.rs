@@ -1,24 +1,25 @@
 //! The application's routes, shared by the executable and integration tests.
 
-use crate::http::request::{Method, Request};
+use crate::http::borrowed_request::Request;
+use crate::http::request::Method;
 use crate::http::response::{Body, Response, Status};
 use crate::http::uri::percent_decode;
 use crate::router::Router;
 
 pub fn default_router() -> Router {
-    application_router().route(Method::Get, "/", index)
+    application_router().route_borrowed(Method::Get, "/", index)
 }
 
 /// Static mode serves the root index; exact application routes shadow files.
 pub fn static_router(files: crate::static_files::StaticFiles) -> Router {
-    application_router().fallback(move |request| files.serve(request))
+    application_router().fallback_borrowed(move |request| files.serve_borrowed(request))
 }
 
 fn application_router() -> Router {
     let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     Router::new()
-        .route(Method::Get, "/health", health)
-        .route(Method::Get, "/stream", |_| {
+        .route_borrowed(Method::Get, "/health", health)
+        .route_borrowed(Method::Get, "/stream", |_| {
             Response::new(Status::Ok)
                 .header("Content-Type", "text/event-stream; charset=utf-8")
                 .header("Cache-Control", "no-cache")
@@ -28,24 +29,24 @@ fn application_router() -> Router {
                     events: 10,
                 })
         })
-        .route(Method::Post, "/echo", echo)
-        .route(Method::Get, "/headers", headers)
-        .route(Method::Get, "/hello", hello)
-        .route(Method::Get, "/counter", move |_request| {
+        .route_borrowed(Method::Post, "/echo", echo)
+        .route_borrowed(Method::Get, "/headers", headers)
+        .route_borrowed(Method::Get, "/hello", hello)
+        .route_borrowed(Method::Get, "/counter", move |_request| {
             let count = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             Response::text(Status::Ok, &count.to_string())
         })
 }
 
-fn index(_request: &Request) -> Response {
+fn index(_request: &Request<'_>) -> Response {
     Response::text(Status::Ok, "hello\n")
 }
 
-fn health(_request: &Request) -> Response {
+fn health(_request: &Request<'_>) -> Response {
     Response::text(Status::Ok, "ok\n")
 }
 
-fn echo(request: &Request) -> Response {
+fn echo(request: &Request<'_>) -> Response {
     Response::new(Status::Ok)
         .header(
             "Content-Type",
@@ -54,10 +55,10 @@ fn echo(request: &Request) -> Response {
                 .get("Content-Type")
                 .unwrap_or("application/octet-stream"),
         )
-        .body(request.body.clone())
+        .body(request.body.as_ref())
 }
 
-fn headers(request: &Request) -> Response {
+fn headers(request: &Request<'_>) -> Response {
     let mut text = String::new();
     for (name, value) in request.headers.iter() {
         text.push_str(name);
@@ -68,7 +69,7 @@ fn headers(request: &Request) -> Response {
     Response::text(Status::Ok, &text)
 }
 
-fn hello(request: &Request) -> Response {
+fn hello(request: &Request<'_>) -> Response {
     // Split the query before decoding so encoded '&' and '=' remain data.
     // The first name wins; every component is still validated, including duplicates.
     let mut name = None;

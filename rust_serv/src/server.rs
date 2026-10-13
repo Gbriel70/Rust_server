@@ -124,7 +124,8 @@ impl Server {
         let stats = Arc::new(Stats::default());
         let handler_stats = Arc::clone(&stats);
         // /stats is reserved; an exact application route shadows a file of this name.
-        let router = router.route(Method::Get, "/stats", move |_| handler_stats.response());
+        let router =
+            router.route_borrowed(Method::Get, "/stats", move |_| handler_stats.response());
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
         Ok(Self {
@@ -330,10 +331,11 @@ fn handle_connection(
             connection.linger_close();
             return Ok(());
         }
-        let (mut response, head_only, keep_alive, version) = match connection.read_request() {
-            Ok(Some(request)) => {
+        let (mut response, head_only, keep_alive, version) = match connection.read_frame() {
+            Ok(Some(frame)) => {
+                let request = frame.request()?;
                 stats.requests.fetch_add(1, Ordering::Relaxed);
-                let response = router.handle(&request);
+                let response = router.handle_borrowed(&request);
                 let keep_alive = request.keep_alive()
                     && (!shutdown.is_requested() || connection.has_pending_request())
                     && handled < config.max_requests

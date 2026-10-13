@@ -11,4 +11,15 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
+criterion = "0.8.2"
+httparse = "1.10.1"
 proptest = "1.12.0"
+
+[[test]]
+name = "phase12_allocations"
+harness = false
+
+[[bench]]
+name = "parser"
+path = "tests/benchmarks/parser.rs"
+harness = false

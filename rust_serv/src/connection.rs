@@ -5,9 +5,10 @@ use std::net::{Shutdown, TcpStream};
 use std::time::{Duration, Instant};
 
 use crate::error::Error;
-use crate::http::parser::RequestParser;
+use crate::http::parser::{RequestFrame, RequestParser};
 use crate::http::request::Request;
 use crate::http::response::Response;
+use bytes::BytesMut;
 
 const BUFFER_SIZE: usize = 1024;
 const LINGER_BYTES: usize = 64 * 1024;
@@ -51,7 +52,7 @@ impl Config {
 pub struct Connection {
     parser: RequestParser,
     stream: TcpStream,
-    buf: Vec<u8>,
+    buf: BytesMut,
     config: Config,
     // With parser-first reads, any remainder after a completed request came
     // from the latest socket read. Retain its arrival time across handlers.
@@ -65,13 +66,18 @@ impl Connection {
         Ok(Self {
             parser: RequestParser::default(),
             stream,
-            buf: Vec::with_capacity(BUFFER_SIZE),
+            buf: BytesMut::with_capacity(BUFFER_SIZE),
             config,
             last_read_at: None,
         })
     }
 
     pub fn read_request(&mut self) -> Result<Option<Request>, Error> {
+        self.read_frame()?
+            .map(|frame| Ok(frame.request()?.to_owned_request()))
+            .transpose()
+    }
+    pub(crate) fn read_frame(&mut self) -> Result<Option<RequestFrame>, Error> {
         let mut started = if self.buf.is_empty() {
             None
         } else {
@@ -80,9 +86,9 @@ impl Connection {
         let idle_started = Instant::now();
         loop {
             // Pipelined requests must be consumed before waiting for more bytes.
-            if let Some((request, consumed)) = self.parser.parse(&self.buf)? {
-                self.buf.drain(..consumed);
-                return Ok(Some(request));
+            if let Some(plan) = self.parser.parse_indices(&self.buf)? {
+                let wire = self.buf.split_to(plan.consumed()).freeze();
+                return Ok(Some(plan.freeze(wire)?));
             }
             let (remaining, timeout_error) = match started {
                 Some(start) => (
