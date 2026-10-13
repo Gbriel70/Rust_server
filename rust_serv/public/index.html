@@ -1,39 +1,79 @@
 <!doctype html>
 <html lang="pt-BR">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Fase 11 — Streaming e busca no vídeo</title>
-    <link rel="stylesheet" href="/style.css">
-  </head>
-  <body>
-    <main>
-      <h1>Streaming de vídeo</h1>
-      <p>Este vídeo é enviado em blocos pelo servidor. Aperte play para assistir.</p>
-      <video controls playsinline preload="metadata" aria-label="Vídeo de demonstração de streaming">
-        <source src="/Download.mp4" type="video/mp4">
-        Seu navegador não suporta este vídeo.
-        <a href="/Download.mp4">Abra o arquivo de vídeo</a>.
-      </video>
-      <p><a href="/Download.mp4">Abrir o vídeo diretamente</a></p>
-      <section aria-labelledby="network-title">
-        <h2 id="network-title">Observe a busca por trechos</h2>
-        <ol>
-          <li>Abra DevTools → Network (Rede), marque Disable cache e escolha uma rede lenta.</li>
-          <li>Recarregue, dê play e avance para uma parte ainda não baixada.</li>
-          <li>Procure as respostas 206 de Download.mp4 e confira Range e Content-Range.</li>
-        </ol>
-        <p>O navegador pode buscar só os bytes necessários ao trecho escolhido,
-          sem baixar primeiro tudo que vem antes.</p>
-      </section>
-      <section aria-labelledby="static-title">
-        <h2 id="static-title">Arquivos estáticos</h2>
-        <img src="/logo.png" alt="Imagem PNG de teste">
-        <img src="/icon.svg" alt="Imagem SVG de teste">
-        <p id="status">Carregando JavaScript</p>
-        <a href="/docs">Documentação</a>
-      </section>
-    </main>
-    <script src="/app.js"></script>
-  </body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Um laboratório para aprender HTTP com requisições reais a um servidor escrito em Rust.">
+  <title>Rust_server — HTTP na prática</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#laboratorio">Pular para os testes</a>
+  <header class="topbar wrap">
+    <a class="brand" href="#inicio"><span class="brand-icon" aria-hidden="true">R<span>_</span></span>rust_server <span class="brand-note">/ laboratório HTTP</span></a>
+    <nav aria-label="Navegação principal"><a href="#laboratorio">Experimentar</a><a href="#streaming">Streaming</a><a href="#entenda">Como funciona</a></nav>
+  </header>
+  <main id="inicio">
+    <section class="hero wrap" aria-labelledby="hero-title">
+      <div>
+        <p class="eyebrow"><span class="dot"></span> FEITO EM RUST · EXPLORADO POR VOCÊ</p>
+        <h1 id="hero-title">O que acontece<br>depois do <span>Enter?</span></h1>
+        <p class="intro">Um pedido sai do navegador. O servidor interpreta, escolhe uma rota e responde. Aqui, você pode acompanhar tudo isso — uma requisição de cada vez.</p>
+        <a class="button primary" href="#laboratorio">Fazer minha primeira requisição <span aria-hidden="true">↗</span></a>
+        <p class="hero-note">Sem instalação extra. Os testes usam este servidor de verdade.</p>
+      </div>
+      <div class="journey" aria-label="Exemplo de uma conversa HTTP">
+        <div class="window-bar"><span><i></i><i></i><i></i></span><span>uma conversa HTTP</span></div>
+        <div class="journey-content"><p class="code-label">01 / SEU NAVEGADOR PERGUNTA</p><pre><span class="orange">GET</span> /hello?name=Você HTTP/1.1</pre><div class="journey-line">↓ <span>TCP → parser → router → handler</span></div><p class="code-label">02 / O SERVIDOR RESPONDE</p><pre><span class="green">200 OK</span>
+Content-Type: text/plain
+
+<span class="white">hello, Você</span></pre><p class="terminal-note">Um protocolo. Uma mensagem. Uma resposta.</p></div>
+      </div>
+    </section>
+    <div class="wrap"><div class="steps"><div><b>01</b><span><strong>Escolha um experimento</strong><small>Cada rota ensina um conceito.</small></span></div><div><b>02</b><span><strong>Envie uma requisição</strong><small>Edite os dados e veja o resultado.</small></span></div><div><b>03</b><span><strong>Entenda a resposta</strong><small>Status, headers e corpo, sem mistério.</small></span></div></div></div>
+    <section class="wrap section" id="laboratorio" aria-labelledby="lab-title">
+      <div class="section-heading"><div><p class="eyebrow">01 / MÃO NA MASSA</p><h2 id="lab-title">Seu primeiro laboratório HTTP.</h2></div><p>Comece pela saudação. Depois explore os outros testes — até um erro tem algo a ensinar.</p></div>
+      <noscript><p class="notice">Ative o JavaScript para usar o laboratório. Você ainda pode abrir <a href="/health">/health</a>, <a href="/hello?name=Visitante">/hello</a> e os arquivos abaixo diretamente.</p></noscript>
+      <div class="lab">
+        <div class="experiment-list" role="group" aria-label="Escolha um experimento">
+          <button data-test="hello" aria-pressed="true"><span>01</span><span>Uma saudação<small>GET · parâmetros na URL</small></span><span aria-hidden="true">↗</span></button>
+          <button data-test="echo" aria-pressed="false"><span>02</span><span>O servidor repete<small>POST · corpo da requisição</small></span><span aria-hidden="true">↗</span></button>
+          <button data-test="headers" aria-pressed="false"><span>03</span><span>Além da mensagem<small>GET · headers</small></span><span aria-hidden="true">↗</span></button>
+          <button data-test="head" aria-pressed="false"><span>04</span><span>Só os metadados<small>HEAD · resposta sem corpo</small></span><span aria-hidden="true">↗</span></button>
+          <button data-test="range" aria-pressed="false"><span>05</span><span>Um pedaço do arquivo<small>GET · intervalo de bytes</small></span><span aria-hidden="true">↗</span></button>
+          <button data-test="counter" aria-pressed="false"><span>06</span><span>Memória compartilhada<small>GET · contador</small></span><span aria-hidden="true">↗</span></button>
+          <button data-test="missing" aria-pressed="false"><span>07</span><span>Um erro esperado<small>GET · arquivo inexistente</small></span><span aria-hidden="true">↗</span></button>
+          <button data-test="method" aria-pressed="false"><span>08</span><span>O método importa<small>GET · rota que exige POST</small></span><span aria-hidden="true">↗</span></button>
+        </div>
+        <div class="experiment">
+          <div class="experiment-top"><span class="pill" id="concept">PARÂMETROS NA URL</span><span class="local-label">↔ requisição real</span></div>
+          <h3 id="experiment-title">Uma resposta com o seu nome.</h3><p id="experiment-description">O método GET pede um recurso. O parâmetro name leva seu nome na URL até o handler da rota /hello.</p>
+          <form id="request-form">
+            <div id="input-group"><label for="request-input" id="input-label">Como você se chama?</label><textarea id="request-input" rows="2" maxlength="2000">Visitante</textarea></div>
+            <div class="request-line"><span id="request-method">GET</span><code id="request-path">/hello?name=Visitante</code></div>
+            <button class="button primary" id="send" type="submit">Enviar requisição <span aria-hidden="true">→</span></button>
+          </form>
+          <div class="expect"><strong>O que observar</strong><p id="expectation">Espere um status 200 e a saudação no corpo. Troque o nome e envie novamente.</p></div>
+        </div>
+      </div>
+      <div class="response-panel" aria-labelledby="response-title">
+        <div class="response-bar"><h3 id="response-title">Resposta do servidor</h3><p id="request-status" role="status">Aguardando sua primeira requisição</p></div>
+        <div class="response-grid"><div><h4>BODY <span>o conteúdo devolvido</span></h4><pre id="response-body" tabindex="0">O resultado aparece aqui depois que você enviar.</pre></div><div><h4>HEADERS <span>os detalhes da resposta</span></h4><pre id="response-headers" tabindex="0">Content-Type, Content-Length e outros headers…</pre></div></div>
+        <p class="response-foot">O navegador pode acrescentar headers e reutilizar conexões. Abra DevTools → Network para inspecionar a conversa completa.</p>
+      </div>
+    </section>
+    <section class="section streaming-section" id="streaming" aria-labelledby="stream-title"><div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">02 / NÃO PRECISA CHEGAR TUDO DE UMA VEZ</p><h2 id="stream-title">Veja os dados chegando.</h2></div><p>Uma resposta também pode chegar aos poucos. Experimente eventos de texto e a busca por trechos de um vídeo.</p></div>
+      <div class="stream-grid">
+        <article class="card"><span class="pill">EVENTOS · SSE</span><h3>Uma conexão, dez mensagens.</h3><p>O servidor envia um evento a cada 250 ms. A conexão fica aberta enquanto as mensagens chegam, sem uma nova requisição para cada evento.</p><div class="stream-controls"><button class="button primary" id="start-stream">Iniciar eventos →</button><button class="button secondary" id="stop-stream" disabled>Parar</button></div><p id="stream-status" role="status">Pronto para conectar a /stream.</p><pre id="stream-output" class="event-output" tabindex="0" aria-label="Eventos recebidos">As mensagens vão aparecer aqui, uma a uma.</pre><p class="caption">SSE é texto enviado do servidor para o cliente. Ao receber os dez eventos, esta página fecha a conexão.</p></article>
+        <article class="card"><span class="pill">VÍDEO · RANGE</span><h3>Pule direto para a parte boa.</h3><p>Dê play e avance para um trecho ainda não carregado. O navegador pode pedir apenas os bytes necessários usando o header <code>Range</code>.</p><video controls playsinline preload="none" aria-label="Vídeo para testar streaming e busca por intervalos"><source src="/video.mp4" type="video/mp4">Seu navegador não suporta vídeo. <a href="/video.mp4">Abra o arquivo.</a></video><details><summary>Como enxergar os pedidos de trechos?</summary><ol><li>Abra DevTools (F12) → Network / Rede.</li><li>Marque Disable cache e dê play no vídeo.</li><li>Avance e procure video.mp4. Quando houver resposta parcial, veja <code>206</code> e <code>Content-Range</code>.</li></ol><p>O comportamento varia conforme o navegador e o que já foi baixado. O experimento 05 acima faz um pedido de intervalo explícito.</p></details><a class="text-link" href="/video.mp4">Abrir vídeo diretamente ↗</a></article>
+      </div>
+    </div></section>
+    <section class="wrap section" id="entenda" aria-labelledby="understand-title"><div class="section-heading"><div><p class="eyebrow">03 / POR TRÁS DA RESPOSTA</p><h2 id="understand-title">Quatro etapas. Nada de mágica.</h2></div></div><div class="architecture"><article><span>01 / CONEXÃO</span><h3>Receber</h3><p>TCP entrega bytes. Uma leitura pode conter só parte da requisição — o servidor acumula o que falta.</p></article><article><span>02 / PARSER</span><h3>Interpretar</h3><p>O parser valida método, caminho, headers e corpo. Mensagens inválidas e grandes demais são rejeitadas.</p></article><article><span>03 / ROUTER</span><h3>Escolher</h3><p>O método e o caminho selecionam um handler. Sem uma rota explícita, o servidor procura um arquivo estático.</p></article><article><span>04 / RESPOSTA</span><h3>Entregar</h3><p>Status informa o resultado, headers descrevem a resposta e o corpo carrega o conteúdo.</p></article></div>
+      <div class="extras"><article class="card"><h3>O servidor em números</h3><p>Uma fotografia dos contadores, consultada apenas quando você clicar. A própria consulta também gera tráfego.</p><button class="button secondary" id="stats-button">Consultar /stats ↗</button><p id="stats-status" role="status">Nenhuma consulta feita.</p><pre id="stats-output" tabindex="0">Conexões, requests, respostas e erros…</pre></article><article class="card"><h3>Esta página também é um teste.</h3><p>HTML, CSS, JavaScript e imagens são arquivos entregues pelo mesmo servidor. Explore os recursos diretamente:</p><div class="file-links"><a href="/icon.svg">Imagem SVG ↗</a><a href="/logo.png">Imagem PNG ↗</a><a href="/docs">Diretório /docs ↗</a></div><p class="caption">Ao abrir /docs, observe o redirecionamento para /docs/ e a entrega de index.html. Para aprofundar, leia README.md e NOTES.md no repositório.</p></article></div>
+    </section>
+  </main>
+  <footer class="wrap"><a class="brand" href="#inicio">rust_server<span class="orange">_</span></a><p>Construído para entender. Aberto para experimentar.</p><a href="#inicio">Voltar ao topo ↑</a></footer>
+</body>
 </html>
