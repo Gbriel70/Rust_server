@@ -943,3 +943,19 @@ footer p,footer>a:last-child {
     transform:none;
   }
 }
+
+.video-instructions {
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.video-instructions code {
+  overflow-wrap: anywhere;
+}
+#video-status {
+  font-size: 12px;
+}
+#video-player .text-link {
+  display: inline-block;
+  margin-top: 12px;
+}

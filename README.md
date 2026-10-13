@@ -30,6 +30,24 @@ curl http://127.0.0.1:8080/stats
 
 Pressione **Enter no terminal do servidor** para solicitar o encerramento ordenado. No modo Tokio, `Ctrl-C` também solicita esse encerramento. O servidor para de admitir novas conexões e aguarda o trabalho já admitido conforme as regras de cada modo.
 
+## Vídeo de demonstração (opcional)
+
+O repositório não inclui o vídeo de exemplo. Os testes HTTP, os eventos SSE e o experimento de Range sobre o HTML funcionam sem ele.
+
+Para testar reprodução e busca por trechos de vídeo:
+
+1. Use um vídeo seu ou baixe um MP4 que você tenha autorização para usar. Prefira um arquivo compatível com seu navegador, como MP4 com vídeo H.264 e áudio AAC.
+2. Copie o arquivo para `rust_serv/public/Download.mp4`, respeitando maiúsculas e minúsculas. Se estiver usando outra pasta em `--root`, coloque `Download.mp4` nela.
+3. Na página principal, em **Vídeo · Range**, clique em **Verificar vídeo local**. Depois, dê play e siga as instruções para inspecionar as respostas `206`.
+
+Exemplo a partir da raiz do repositório:
+
+```bash
+cp /caminho/para/seu-video.mp4 rust_serv/public/Download.mp4
+```
+
+Não é necessário reiniciar o servidor após copiar o arquivo. Arquivos `*.mp4` diretamente em `rust_serv/public/` são ignorados pelo Git para manter os vídeos locais fora dos commits. Não use `git add -f` para incluí-los.
+
 ## O que já está implementado
 
 - Parsing incremental de requests HTTP/1.0 e HTTP/1.1, com limites de tamanho e validação de mensagens malformadas.

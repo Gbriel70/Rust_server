@@ -10,3 +10,6 @@ experiments
 *.out
 *.c
 examples
+
+# Vídeos de demonstração são adicionados localmente, sem versionamento.
+/rust_serv/public/*.mp4

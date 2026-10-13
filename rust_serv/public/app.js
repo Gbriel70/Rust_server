@@ -127,3 +127,34 @@ $('stats-button').addEventListener('click', async () => {
     $('stats-output').textContent = failure(error);
   } finally { $('stats-button').disabled = false; }
 });
+
+// Só oferecemos o player depois de confirmar o arquivo no servidor.
+$('check-video').addEventListener('click', async () => {
+  const button = $('check-video');
+  const video = $('demo-video');
+  button.disabled = true;
+  $('video-status').textContent = 'Procurando Download.mp4 no servidor…';
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+  $('video-player').hidden = true;
+  try {
+    const { response } = await request('/Download.mp4', { method: 'HEAD' });
+    if (response.status === 404) {
+      $('video-status').textContent = 'Vídeo não encontrado. Adicione Download.mp4 à pasta servida e clique novamente. Os outros testes continuam disponíveis.';
+    } else if (!response.ok) {
+      $('video-status').textContent = `O servidor respondeu HTTP ${response.status}. Confira o arquivo e suas permissões.`;
+    } else if (!(response.headers.get('content-type') || '').toLowerCase().startsWith('video/mp4')) {
+      $('video-status').textContent = 'O endereço não retornou um vídeo MP4. Confira o arquivo e a pasta configurada em --root.';
+    } else {
+      video.src = '/Download.mp4';
+      $('video-player').hidden = false;
+      $('video-status').textContent = 'Vídeo encontrado! Dê play e avance para testar a busca por trechos.';
+    }
+  } catch (error) {
+    $('video-status').textContent = failure(error);
+  } finally { button.disabled = false; }
+});
+$('demo-video').addEventListener('error', () => {
+  $('video-status').textContent = 'Não foi possível reproduzir o vídeo. Verifique a conexão e use um MP4 compatível com seu navegador, como H.264/AAC.';
+});
