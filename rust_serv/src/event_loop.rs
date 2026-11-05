@@ -26,6 +26,7 @@ use std::{
 #[derive(Debug)]
 pub enum ConnectionState {
     Reading,
+    WebSocket(crate::websocket::transport::Connection),
     Writing {
         bytes: Vec<u8>,
         offset: usize,
@@ -34,6 +35,7 @@ pub enum ConnectionState {
         waiting: Option<Instant>,
         close_after: bool,
         started: Instant,
+        upgrade: bool,
     },
     Closing {
         deadline: Instant,
@@ -61,6 +63,9 @@ const LISTENER: u64 = 0;
 impl Connection {
     fn flags(&self, edge: bool) -> u32 {
         let direction = match self.state {
+            ConnectionState::WebSocket(ref connection) if connection.wants_write() => {
+                libc::EPOLLOUT
+            }
             ConnectionState::Writing {
                 waiting: Some(_), ..
             } => 0,
@@ -82,15 +87,16 @@ impl Connection {
         close: bool,
         version: Version,
     ) -> io::Result<()> {
+        let upgrade = response.is_websocket();
         if version == Version::Http10 && response.is_chunked() {
             response = Response::text(
                 Status::HttpVersionNotSupported,
                 "streaming requires HTTP/1.1",
             );
         }
-        if close {
+        if close && !upgrade {
             response = response.header("Connection", "close");
-        } else if version == Version::Http10 {
+        } else if version == Version::Http10 && !upgrade {
             response = response.header("Connection", "keep-alive");
         }
         let mut bytes = Vec::new();
@@ -108,6 +114,7 @@ impl Connection {
             waiting: None,
             close_after: close,
             started: Instant::now(),
+            upgrade,
         };
         Ok(())
     }
@@ -121,6 +128,9 @@ impl Connection {
     ) -> io::Result<(bool, bool)> {
         for _ in 0..TURN_BUDGET {
             match &mut self.state {
+                ConnectionState::WebSocket(connection) => {
+                    return connection.drive(&mut self.stream, config, shutdown);
+                }
                 ConnectionState::Reading => {
                     // Parse first: a pipelined request may already be in user memory.
                     match self.parser.parse_borrowed(&self.input) {
@@ -223,6 +233,7 @@ impl Connection {
                     waiting,
                     close_after,
                     started,
+                    upgrade,
                 } => {
                     if *offset == bytes.len() {
                         bytes.clear();
@@ -257,6 +268,16 @@ impl Connection {
                             }
                             Chunk::Done => {
                                 stats.responses.fetch_add(1, Ordering::Relaxed);
+                                if *upgrade {
+                                    self.state = ConnectionState::WebSocket(
+                                        crate::websocket::transport::Connection::new(
+                                            bytes::BytesMut::from(
+                                                std::mem::take(&mut self.input).as_slice(),
+                                            ),
+                                        ),
+                                    );
+                                    continue;
+                                }
                                 if *close_after {
                                     self.stream.shutdown(Shutdown::Write)?;
                                     self.input.clear();
@@ -316,6 +337,10 @@ impl Connection {
     }
     fn needs_tick(&self, config: Config, shutdown: bool) -> bool {
         match &self.state {
+            ConnectionState::WebSocket(connection) => {
+                (shutdown && !connection.is_closing())
+                    || Instant::now() >= connection.deadline(config)
+            }
             ConnectionState::Reading => {
                 (shutdown && self.input.is_empty())
                     || self

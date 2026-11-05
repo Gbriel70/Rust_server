@@ -133,7 +133,7 @@ impl Connection {
         self.write_block(&headers).await?;
         if !head && response.allows_body() {
             match response.body {
-                Body::Empty => {}
+                Body::Empty | Body::WebSocket => {}
                 Body::Bytes(bytes) => {
                     for chunk in bytes.chunks(BLOCK_SIZE) {
                         self.write_block(chunk).await?;
@@ -380,6 +380,18 @@ async fn handle_connection(
             ),
             Err(error) => return Err(error),
         };
+        if response.is_websocket() {
+            connection.write_response(response, false, shutdown).await?;
+            stats.responses.fetch_add(1, Ordering::Relaxed);
+            return crate::websocket::transport::run_async(
+                connection.stream,
+                connection.input,
+                config,
+                shutdown,
+            )
+            .await
+            .map_err(Error::from);
+        }
         if version == Version::Http10 && response.is_chunked() {
             response = Response::text(
                 Status::HttpVersionNotSupported,

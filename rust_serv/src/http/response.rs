@@ -10,6 +10,7 @@ use super::headers::Headers;
 /// HTTP statuses that the server can produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
+    SwitchingProtocols,
     Ok,
     PartialContent,
     RangeNotSatisfiable,
@@ -26,12 +27,15 @@ pub enum Status {
     RequestHeaderFieldsTooLarge,
     NotImplemented,
     HttpVersionNotSupported,
+    UpgradeRequired,
 }
 
 impl Status {
     /// Returns the numeric code associated with the HTTP status.
     pub fn code(self) -> u16 {
         match self {
+            Self::SwitchingProtocols => 101,
+            Self::UpgradeRequired => 426,
             Self::Ok => 200,
             Self::PartialContent => 206,
             Self::RangeNotSatisfiable => 416,
@@ -53,6 +57,8 @@ impl Status {
 
     pub fn reason(self) -> &'static str {
         match self {
+            Self::SwitchingProtocols => "Switching Protocols",
+            Self::UpgradeRequired => "Upgrade Required",
             Self::Ok => "OK",
             Self::PartialContent => "Partial Content",
             Self::RangeNotSatisfiable => "Range Not Satisfiable",
@@ -165,7 +171,13 @@ impl Response {
         w.write_all(&bytes)
     }
     pub fn allows_body(&self) -> bool {
-        !matches!(self.status, Status::NoContent | Status::NotModified)
+        !matches!(
+            self.status,
+            Status::SwitchingProtocols | Status::NoContent | Status::NotModified
+        )
+    }
+    pub fn is_websocket(&self) -> bool {
+        self.status == Status::SwitchingProtocols && matches!(self.body, Body::WebSocket)
     }
     pub fn is_chunked(&self) -> bool {
         self.allows_body() && self.body.len().is_none()

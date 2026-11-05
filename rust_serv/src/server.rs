@@ -370,6 +370,11 @@ fn handle_connection(
             ),
             Err(error) => return Err(error),
         };
+        if response.is_websocket() {
+            connection.write_response(&response, false)?;
+            stats.responses.fetch_add(1, Ordering::Relaxed);
+            return connection.into_websocket(shutdown).map_err(Error::from);
+        }
         if version == Version::Http10 && response.is_chunked() {
             response = Response::text(
                 Status::HttpVersionNotSupported,

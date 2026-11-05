@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebSocket · Rust_server</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/websocket.js" defer></script>
+</head>
+<body>
+  <header class="topbar wrap"><a class="brand" href="/">rust_server / laboratório</a></header>
+  <main class="wrap">
+    <section aria-labelledby="title">
+      <p class="eyebrow">FASE 13 · WEBSOCKET</p>
+      <h1 id="title">Uma conexão,<br>várias mensagens.</h1>
+      <p class="intro">O navegador abre /ws com um upgrade HTTP. Depois, texto e bytes viajam em frames pela mesma conexão.</p>
+      <p id="status" role="status">Desconectado</p>
+      <button class="button primary" id="connect" type="button">Conectar</button>
+      <button class="button" id="close" type="button" disabled>Fechar conexão</button>
+      <form id="message-form">
+        <p><label for="message">Mensagem para o servidor</label></p>
+        <input id="message" value="Olá, servidor!" maxlength="1024" autocomplete="off">
+        <button class="button primary" id="send" type="submit" disabled>Enviar texto</button>
+        <button class="button" id="binary" type="button" disabled>Enviar bytes</button>
+      </form>
+      <h2>Conversa</h2>
+      <pre id="log" aria-live="polite"></pre>
+      <p>Abra a aba Network das ferramentas do navegador, selecione a conexão /ws e acompanhe as mensagens. O fechamento normal usa o código 1000.</p>
+    </section>
+  </main>
+</body>
+</html>

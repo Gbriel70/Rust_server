@@ -18,6 +18,7 @@ pub fn static_router(files: crate::static_files::StaticFiles) -> Router {
 fn application_router() -> Router {
     let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     Router::new()
+        .route_borrowed(Method::Get, "/ws", crate::websocket::handshake)
         .route_borrowed(Method::Get, "/health", health)
         .route_borrowed(Method::Get, "/stream", |_| {
             Response::new(Status::Ok)

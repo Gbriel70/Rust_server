@@ -11,6 +11,8 @@ pub const BLOCK_SIZE: usize = 64 * 1024;
 #[derive(Debug)]
 pub enum Body {
     Empty,
+    /// Marker consumed by transports after a successful HTTP upgrade.
+    WebSocket,
     Bytes(Bytes),
     File {
         file: File,
@@ -26,7 +28,7 @@ pub enum Body {
 impl Body {
     pub fn len(&self) -> Option<u64> {
         match self {
-            Self::Empty => Some(0),
+            Self::Empty | Self::WebSocket => Some(0),
             Self::Bytes(b) => Some(b.len() as u64),
             Self::File { len, .. } => Some(*len),
             Self::Stream { .. } => None,
@@ -37,14 +39,14 @@ impl Body {
     }
     pub fn as_bytes(&self) -> Option<&[u8]> {
         match self {
-            Self::Empty => Some(&[]),
+            Self::Empty | Self::WebSocket => Some(&[]),
             Self::Bytes(b) => Some(b),
             _ => None,
         }
     }
     pub fn cursor(&self) -> io::Result<BodyCursor> {
         Ok(match self {
-            Self::Empty => BodyCursor::Empty,
+            Self::Empty | Self::WebSocket => BodyCursor::Empty,
             Self::Bytes(b) => BodyCursor::Bytes(b.clone()),
             Self::File { file, len, offset } => BodyCursor::File {
                 file: file.try_clone()?,

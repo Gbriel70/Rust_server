@@ -152,6 +152,9 @@ impl Connection {
             response.write_to(&mut self.stream)
         }
     }
+    pub(crate) fn into_websocket(self, shutdown: &crate::server::ShutdownHandle) -> io::Result<()> {
+        crate::websocket::transport::run_blocking(self.stream, self.buf, self.config, shutdown)
+    }
 
     /// Sends FIN, then drains unread input for at most 64 KiB or one second.
     /// Best effort: teardown errors do not replace the response's write result.

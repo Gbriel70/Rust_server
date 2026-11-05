@@ -58,6 +58,7 @@ Não é necessário reiniciar o servidor após copiar o arquivo. Arquivos `*.mp4
 - Intervalos de bytes de arquivos com `Range`, `206 Partial Content` e `416 Range Not Satisfiable`.
 - Quatro modelos de concorrência, timeouts, métricas em `/stats` e logs configuráveis.
 - Requests que emprestam os bytes já recebidos, reduzindo cópias durante o parsing.
+- WebSocket em `/ws`, com echo de texto e binário, fragmentação, ping/pong e fechamento nos quatro modos.
 
 O suporte é um subconjunto deliberado de HTTP. As limitações estão descritas ao final deste documento.
 
@@ -218,11 +219,12 @@ Estas são as rotas do executável padrão:
 | `POST /echo` | Devolve os bytes recebidos e o tipo de conteúdo informado. |
 | `GET /headers` | Mostra os headers recebidos. |
 | `GET /counter` | Incrementa um contador compartilhado entre as conexões. |
+| `GET /ws` | Abre uma sessão WebSocket de echo após validar o upgrade HTTP. |
 | `GET /stream` | Envia uma demonstração SSE com dez eventos, em intervalos de 250 ms. |
 | `GET /stats` | Retorna contadores do servidor em JSON; rota reservada pelo `Server`. |
 | `GET /` e caminhos sem rota explícita | Procuram arquivos sob `--root`; `/` serve `index.html`. |
 
-Rotas `GET` também aceitam `HEAD`. O roteamento é por caminho exato, sem parâmetros como `/users/:id`. Um caminho registrado com outro método produz `405`; ele não é reinterpretado como arquivo estático.
+Rotas `GET` também aceitam `HEAD`. A abertura WebSocket exige `GET`, e `HEAD /ws` recebe 400. O roteamento é por caminho exato, sem parâmetros como `/users/:id`. Um caminho registrado com outro método produz `405`; ele não é reinterpretado como arquivo estático.
 
 ```bash
 # Metadados sem transmitir o corpo do arquivo
@@ -248,6 +250,12 @@ Em [`rust_serv/src/routes.rs`](rust_serv/src/routes.rs), acrescente uma chamada 
 ```
 
 `Method`, `Response` e `Status` já são importados nesse módulo. O handler recebe a visão emprestada da request e devolve uma resposta; leitura do socket, serialização e keep-alive continuam sob responsabilidade do servidor. Como essa rota entra no router da aplicação, ela tem prioridade sobre um eventual arquivo com o mesmo caminho.
+
+## WebSocket
+
+Com os arquivos de `rust_serv/public` servidos, abra [a demonstração WebSocket](http://127.0.0.1:8080/websocket.html), conecte e envie texto ou bytes. O navegador usa a rota `/ws`. Cada frame e mensagem têm limite de 1 MiB.
+
+Os limites, a arquitetura e os comandos de verificação estão no [guia da Fase 13](rust_serv/docs/websocket.md).
 
 ## Configuração
 
@@ -304,7 +312,7 @@ Há um pacote separado de fuzzing em [`rust_serv/tests/fuzz`](rust_serv/tests/fu
 
 Este é um projeto de estudo com implementações explícitas das camadas do servidor. Seu estado atual tem limites que também ajudam a entender as escolhas:
 
-- Não implementa TLS/HTTPS, HTTP/2, HTTP/3 ou WebSocket.
+- Não implementa TLS/HTTPS, HTTP/2 ou HTTP/3.
 - Handlers são síncronos; Tokio os executa por `spawn_blocking`, mas não transforma automaticamente seu trabalho em operações assíncronas canceláveis.
 - O corpo recebido é limitado e acumulado antes do handler. Streaming de resposta não significa streaming de upload para a aplicação.
 - O stream SSE é uma demonstração finita, não uma API genérica de publicação de eventos.
